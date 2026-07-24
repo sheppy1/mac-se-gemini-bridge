@@ -204,8 +204,32 @@ flakiness), not misconfiguration.
 
 ## Outstanding TODO
 
-All done except the loose ends listed above ("Loose ends still worth tidying
-up") — persistent-run setup and the security reverts.
+Everything from the original scope is done except the loose ends listed
+above ("Loose ends still worth tidying up") — persistent-run setup and the
+security reverts.
+
+### Phase 2 (not started): give the Gemini bridge SE filesystem access
+
+Idea: extend `bridge.py` to expose `mac_ftp.py`'s operations (`ls`, `get`,
+`put`, `mkdir`, `rmdir`, `rm`, `rename`, `put-app`) as callable tools via
+Gemini's function-calling/tool-use API support, so a plain-English request
+typed into the terminal (e.g. "what's in the Apps folder?" or "delete that
+old test file") gets carried out directly against the SE's filesystem, with
+the result fed back into the conversation. Rough shape:
+
+1. Define each `mac_ftp.py` operation as a Gemini function-calling tool
+   schema (name, description, parameters).
+2. In `bridge.py`'s request loop, pass the tool schemas alongside the
+   conversation; when Gemini's response includes a function call, execute
+   the corresponding `mac_ftp.py` operation (import its functions directly
+   rather than shelling out) and send the result back as a follow-up turn.
+3. Finish testing `mac_ftp.py`'s untested operations first (`get`, `rm`,
+   `rmdir`, `rename`, `put-app` — see its section above) before wiring them
+   up to an LLM that might call them autonomously.
+4. Worth deciding guardrails up front — e.g. should destructive operations
+   (`rm`, `rmdir`) require some form of confirmation before Gemini can
+   trigger them directly, given they'd be running against the only copy of
+   whatever's on that volume.
 
 ## Key files
 
