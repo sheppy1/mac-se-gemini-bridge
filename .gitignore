@@ -1,0 +1,4 @@
+bridge/bridge.log
+bridge/bridge.log.err
+__pycache__/
+*.pyc
