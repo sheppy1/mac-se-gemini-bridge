@@ -1,13 +1,14 @@
 # Mac SE Retro Project
 
 Getting a real 1987 Macintosh SE (68000 CPU, BlueSCSI SD-card storage in
-place of a SCSI hard disk) running as a live FTP server on a modern LAN,
+place of a SCSI hard disk) running as a live FTP server on the internet,
 then extending it so it can "chat with AI" through a Telnet client talking
-to a small bridge that calls the Gemini API. The SE dual-boots **System
-7.1** (NetPresenz FTP server, BetterTelnet, the Gemini bridge) and
-**System 6.0.8** (BlueSCSI WiFi DaynaPORT networking, BetterTelnet with its
-own built-in FTP server as the System-6-compatible alternative to
-NetPresenz — see below for why NetPresenz specifically can't run there).
+to a cloud-hosted bridge that calls the Gemini API. The SE dual-boots
+**System 7.1** (NetPresenz FTP server, BetterTelnet as the Gemini bridge
+client) and **System 6.0.8** (BlueSCSI WiFi DaynaPORT networking, NCSA
+Telnet 2.7b4 as both FTP server and Gemini bridge client — BetterTelnet
+crashes on this particular SE under System 6.0.8, and NetPresenz can't run
+on System 6 at all; see below for both).
 
 Full narrative of how all of this actually got built — including several
 wrong turns and how they were diagnosed — is in
@@ -54,9 +55,10 @@ states it requires System 7, because it depends entirely on System 7's
 Personal File Sharing for authentication and file access — a feature that
 doesn't exist in System 6 at all. This isn't a packaging or compatibility
 quirk to work around; don't spend time trying. For FTP serving on the
-System 6.0.8 side, use **BetterTelnet's built-in FTP server** instead (see
-below) — the period-correct System-6-era equivalent, inherited from its
-NCSA Telnet lineage.
+System 6.0.8 side, use **NCSA Telnet's built-in FTP server** instead (see
+below) — the genuine 1995 program BetterTelnet was later built on, and the
+one that actually works on this SE under System 6.0.8 (BetterTelnet itself
+crashes there).
 
 ## `bridge/` — the AI chat bridge
 

@@ -40,11 +40,18 @@ flowchart TB
     BT -- "Telnet :6023" --> Azure
     NCSA -- "Telnet :6023 + FTP :21" --> Azure
 
-    style SE fill:#e8d5c4,stroke:#333
-    style BlueSCSI fill:#d4e6f1,stroke:#333
-    style Azure fill:#d5f5d5,stroke:#333
-    style Gemini fill:#fce8b2,stroke:#333
-    style PC fill:#e6e6e6,stroke:#333
+    style SE fill:#e8d5c4,stroke:#333,color:#1a1a1a
+    style BlueSCSI fill:#d4e6f1,stroke:#333,color:#1a1a1a
+    style Azure fill:#d5f5d5,stroke:#333,color:#1a1a1a
+    style Gemini fill:#fce8b2,stroke:#333,color:#1a1a1a
+    style PC fill:#e6e6e6,stroke:#333,color:#1a1a1a
+    style NP fill:#fdf6ec,stroke:#333,color:#1a1a1a
+    style BT fill:#fdf6ec,stroke:#333,color:#1a1a1a
+    style NCSA fill:#fdf6ec,stroke:#333,color:#1a1a1a
+    style HD00 fill:#eef6fc,stroke:#333,color:#1a1a1a
+    style HD10 fill:#eef6fc,stroke:#333,color:#1a1a1a
+    style DPORT fill:#eef6fc,stroke:#333,color:#1a1a1a
+    style Router fill:#ffffff,stroke:#333,color:#1a1a1a
 ```
 
 Key points this diagram is making:
@@ -76,7 +83,13 @@ flowchart LR
     SD --> NE4["NE4.hda (0 bytes)<br/>reserves the WiFi DaynaPORT<br/>network device slot"]
     SD --> SHARED["shared/ folder<br/>plain FAT, no Mac metadata —<br/>drop zone for individual files<br/>(not folders) transferred from<br/>the Windows side"]
 
-    style SD fill:#d4e6f1,stroke:#333
+    style SD fill:#d4e6f1,stroke:#333,color:#1a1a1a
+    style ID0 fill:#eef6fc,stroke:#333,color:#1a1a1a
+    style ID1 fill:#eef6fc,stroke:#333,color:#1a1a1a
+    style ID2 fill:#eef6fc,stroke:#333,color:#1a1a1a
+    style ID3 fill:#eef6fc,stroke:#333,color:#1a1a1a
+    style NE4 fill:#eef6fc,stroke:#333,color:#1a1a1a
+    style SHARED fill:#eef6fc,stroke:#333,color:#1a1a1a
 ```
 
 Every configured SCSI ID mounts **simultaneously** regardless of which one
@@ -152,7 +165,15 @@ flowchart LR
     F -->|"shared/ folder +<br/>StuffIt Expander"| H["Manual decode on the Mac"]
     F -->|"hfsutils hcopy -m +<br/>make_dc42.py"| I[".dsk Disk Copy 4.2 image<br/>(for Mount Image / MountImage cdev)"]
 
-    style D fill:#fce8b2,stroke:#333
+    style D fill:#fce8b2,stroke:#333,color:#1a1a1a
+    style A fill:#ffffff,stroke:#333,color:#1a1a1a
+    style B fill:#eef6fc,stroke:#333,color:#1a1a1a
+    style C fill:#eef6fc,stroke:#333,color:#1a1a1a
+    style E fill:#eef6fc,stroke:#333,color:#1a1a1a
+    style F fill:#d5f5d5,stroke:#333,color:#1a1a1a
+    style G fill:#ffffff,stroke:#333,color:#1a1a1a
+    style H fill:#ffffff,stroke:#333,color:#1a1a1a
+    style I fill:#ffffff,stroke:#333,color:#1a1a1a
 ```
 
 The `extract_appledouble.py` step exists because of a real bug hit early

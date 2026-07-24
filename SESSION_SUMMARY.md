@@ -51,9 +51,10 @@ section in "Outstanding TODO".
 The Mac SE dual-boots **System 7.1** (NetPresenz FTP server, BetterTelnet,
 Gemini bridge — all working) and, as of this session, **System 6.0.8** too
 (networking via BlueSCSI's WiFi DaynaPORT emulation, also now working, plus
-BetterTelnet with its built-in FTP server as the System-6-compatible
-alternative to NetPresenz, which cannot run on System 6 at all — see
-"System 6.0.8 + DaynaPORT" section below for the full story and why).
+NCSA Telnet 2.7b4 with its built-in FTP server as the System-6-compatible
+alternative to NetPresenz, which cannot run on System 6 at all — BetterTelnet
+itself crashes under 6.0.8 on this SE, see "System 6.0.8 + DaynaPORT"
+section below for the full story and why).
 See "Post-summary developments" and the new System 6.0.8 section further
 down for how everything below this line got resolved, and `README.md` for
 the setup/operations reference.
