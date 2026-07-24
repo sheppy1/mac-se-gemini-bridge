@@ -231,6 +231,18 @@ the result fed back into the conversation. Rough shape:
    trigger them directly, given they'd be running against the only copy of
    whatever's on that volume.
 
+### Phase 3 (not started): scheduled auto-start for the Azure VM
+
+The VM has a working auto-**shutdown** schedule (11pm UK time, DST-aware —
+see the Azure section below), but Azure has no equivalent one-liner for
+auto-**start** (the VM can't wake itself while it's off, so this needs an
+always-on external trigger). Realistic approach: an Azure Automation
+Account with a scheduled runbook calling `Start-AzVM`/`az vm start` at 8am,
+using a system-assigned managed identity scoped to just this VM (avoid a
+broader-permissioned Run-As account). Deliberately deferred — flagged as a
+stretch goal, and the manual-start fallback (`az vm start -g
+mac-se-gemini-bridge-rg -n mac-se-bridge-vm`) works fine in the meantime.
+
 ## Key files
 
 | File | Purpose |
@@ -485,3 +497,75 @@ client (same `bridge.py`, host `192.168.1.158` port `6023`, no server-side
 changes needed — the bridge is client-agnostic). **Both OS environments on
 the SE are now fully working end-to-end**: FTP serving and Gemini chat, on
 System 7.1 and System 6.0.8 alike.
+
+## Moving the bridge to Azure
+
+Goal: get `bridge.py` off the Windows laptop entirely and onto an
+always-on cloud VM, so the Mac SE can chat with Gemini without needing the
+laptop powered on. Feasible because the SE already had proven real
+internet connectivity (not just LAN) — `MacTCP Ping` had already
+successfully reached `1.1.1.1` during the DaynaPORT setup.
+
+**Added password authentication to `bridge.py` first**, since this was
+about to go from "only reachable on my home LAN" to "reachable by anyone
+who finds the IP/port on the public internet." Without it, a stranger
+could freely burn the owner's Gemini API quota. Implementation: an
+optional `BRIDGE_PASSWORD` env var (unset = no auth, for local-LAN-only
+use); if set, the client is prompted for it before the normal chat banner,
+up to 3 attempts, constant-time comparison (`hmac.compare_digest`) to
+avoid trivial timing attacks, a short delay between attempts to slow down
+brute-forcing. Required refactoring the line-reading loop into a shared
+`iter_lines()` generator so the same Telnet-IAC-aware line reader could be
+used both for the password prompt and the main chat loop. Tested locally
+(wrong password rejected, correct password proceeds, full chat still
+works) before deploying anywhere.
+
+**Azure setup** (subscription: Visual Studio Enterprise Subscription,
+via `az` CLI — the Azure Claude Code plugin was also installed for MCP-based
+interaction in future sessions, but wasn't live in *this* session, which
+needed a restart to pick up; `az` CLI was used instead since it works
+immediately):
+
+1. `az login` initially failed with an MFA/conditional-access error
+   (`AADSTS50076`) against two tenants — resolved by the user completing
+   the interactive browser MFA challenge properly; this isn't something
+   fixable from the CLI/agent side, it's inherently an interactive step
+   tied to the account's own security policy.
+2. Resource group `mac-se-gemini-bridge-rg` in `uksouth`.
+3. VM `mac-se-bridge-vm`: **Standard_B1ls** (1 vCPU, 0.5GB RAM, ~$3.80/mo —
+   cheapest available tier, explicitly requested; plenty for a stdlib-only
+   Python socket server), Ubuntu 22.04 LTS, SSH key auth
+   (`az vm create --generate-ssh-keys`).
+4. Opened inbound port 6023 on the VM's network security group
+   (`az vm open-port`) — port 22/SSH is allowed by default on VM creation.
+5. Deployed `bridge.py` via `scp`, plus a `bridge.env` file (mode 600)
+   holding `GEMINI_API_KEY` and the new `BRIDGE_PASSWORD` — kept out of the
+   unit file itself so secrets aren't visible via `systemctl cat` or
+   process listings of the unit file.
+6. Set up as a systemd service (`/etc/systemd/system/mac-se-bridge.service`,
+   `Restart=always`, `EnvironmentFile=`) so it survives reboots and
+   auto-restarts on crash — enabled and started, confirmed running.
+7. Tested end-to-end from this PC over the public internet (not LAN):
+   password prompt, correct/incorrect rejection, and a full Gemini
+   round-trip all worked identically to the local setup.
+8. **Auto-shutdown at 11pm UK time**: `az vm auto-shutdown` only accepts a
+   raw UTC time with no timezone parameter in its convenience-command form
+   — setting a fixed UTC offset would silently drift by an hour whenever
+   BST/GMT changes. Fixed by updating the underlying
+   `microsoft.devtestlab/schedules` resource directly via `az resource
+   update` to set `properties.timeZoneId` to `"GMT Standard Time"`
+   (Azure's Windows-style zone ID for UK), so the schedule now correctly
+   stays at 11pm local year-round without manual adjustment at DST
+   changes.
+9. **Auto-start at 8am was explicitly deferred** — see "Phase 3" in
+   Outstanding TODO above. No Azure equivalent one-liner exists for this
+   (unlike shutdown); it needs a separate always-on trigger (Automation
+   Account + scheduled runbook). Manual start in the meantime:
+   `az vm start -g mac-se-gemini-bridge-rg -n mac-se-bridge-vm`.
+
+**Result**: the Mac SE can now reach the Gemini bridge at the VM's public
+IP on port 6023 from either OS side, with the laptop completely out of the
+loop once confirmed working from the actual hardware (verification was
+still pending as of this write-up — check with the user before assuming
+this is fully live end-to-end from the SE itself, as opposed to just
+verified from this PC).

@@ -1,33 +1,44 @@
 # Mac SE ↔ Gemini Telnet Bridge
 
-Lets a real 1987 Macintosh SE "chat with AI" by typing into a Telnet client
-(BetterTelnet), which talks to a small Python bridge running on a Windows PC
-on the same LAN, which calls the Gemini API over HTTPS and relays the reply
-back.
+Lets a real vintage Macintosh SE "chat with AI" by typing into a Telnet
+client (BetterTelnet on System 7.1, NCSA Telnet on System 6.0.8), which
+talks to a small Python bridge that calls the Gemini API over HTTPS and
+relays the reply back. The bridge can run either on a Windows PC on the
+same LAN, or — the current recommended setup — on an always-on Azure VM,
+so nothing on the SE's home network needs to stay powered on.
 
 For the full story of how this was built (StuffIt/AppleDouble archaeology,
-NetPresenz FTP setup, the MacTCP passive-mode saga, etc.), see
-[`../SESSION_SUMMARY.md`](../SESSION_SUMMARY.md). For the packaging scripts
-used to build `BetterTelnet.bin` (and `../netpresenz/NetPresenz.dsk[.bin]`),
-see [`../tools/`](../tools/). This file is just the "how to run/rebuild the
-bridge itself" reference.
+NetPresenz FTP setup, the MacTCP passive-mode saga, the System 6.0.8 +
+DaynaPORT saga, the Azure migration, etc.), see
+[`../SESSION_SUMMARY.md`](../SESSION_SUMMARY.md). For a visual architecture
+overview with diagrams, see [`../ARCHITECTURE.md`](../ARCHITECTURE.md). For
+the packaging scripts used to build `BetterTelnet.bin`/`NCSA Telnet.bin`
+(and `../netpresenz/NetPresenz.dsk[.bin]`), see [`../tools/`](../tools/).
+This file is the "how to run/rebuild the bridge itself" reference.
 
 ## Architecture
 
 ```
- Macintosh SE                  Windows PC                    Internet
- (192.168.1.210)               (192.168.1.158)
- BetterTelnet          LAN     bridge.py                     Google
- ───────────────  TCP:6023 ──▶ (Python, stdlib only)  HTTPS ──▶ Gemini API
+ Macintosh SE                  Bridge host                   Internet
+ (either OS side)              (Azure VM, or a Windows PC
+                                 on the same LAN)
+ BetterTelnet/         TCP     bridge.py                     Google
+ NCSA Telnet     :6023 ──────▶ (Python, stdlib only)  HTTPS ──▶ Gemini API
                                 listens on 0.0.0.0:6023        generateContent
 ```
 
-- The SE runs **BetterTelnet** and connects to the Windows PC's LAN IP on
-  port 6023.
+- The SE runs a Telnet client and connects to the bridge host's IP on port
+  6023 — either a Windows PC's LAN IP (same network only) or an Azure VM's
+  public IP (reachable from anywhere the SE has internet access, which was
+  confirmed via `MacTCP Ping` reaching `1.1.1.1` during the DaynaPORT setup).
 - `bridge.py` is a plain TCP server (not a real Telnet daemon — it just
   answers enough Telnet IAC option-negotiation to stop clients from hanging,
   see `strip_telnet_negotiation()`). Each line of text typed on the Mac
   becomes one turn in a growing conversation.
+- If `BRIDGE_PASSWORD` is set, the client is prompted for it before the
+  chat banner (up to 3 attempts, constant-time comparison, a short delay
+  between attempts). **Required** for any deployment reachable beyond a
+  trusted LAN — see the Azure section below for why.
 - Per line received, the bridge POSTs the whole conversation-so-far to
   Google's `generativelanguage.googleapis.com` REST API (model
   `gemini-flash-latest`) using only Python's built-in `urllib` — **no Node.js,
@@ -40,15 +51,18 @@ bridge itself" reference.
 
 ## Requirements
 
-- Python 3 (any recent 3.x — uses only the standard library: `json`, `os`,
-  `socket`, `sys`, `threading`, `urllib`). No `pip install` needed.
+- Python 3 (any recent 3.x — uses only the standard library: `hmac`, `json`,
+  `os`, `socket`, `sys`, `threading`, `time`, `urllib`). No `pip install`
+  needed.
 - A Gemini API key from [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
   (free tier available). This is **separate** from a Claude/Anthropic
   subscription — different company, different billing.
-- Windows Firewall inbound rule allowing TCP port 6023 (see below) — without
-  it, connections from the Mac silently fail with a "host or gateway not
-  responding"-style error in BetterTelnet, even though everything else looks
-  fine.
+- A firewall rule allowing inbound TCP port 6023 — on Windows this needs an
+  explicit rule (see below); on the Azure VM this is an NSG rule (see the
+  Azure section).
+- If reachable beyond a trusted LAN: a `BRIDGE_PASSWORD` set to something
+  random (see below) — without it, anyone who finds the IP/port can chat
+  using your Gemini API quota.
 
 ## One-time setup (fresh machine)
 
@@ -124,13 +138,150 @@ far. `GEMINI_API_KEY` being a User-level env var set via `setx` should be
 inherited fine by a logon-triggered task, since those run in the user's
 session.)
 
+**This local-Windows setup is now the fallback/dev option** — the
+recommended way to run this is the Azure deployment below, which doesn't
+need any machine on the SE's home network to stay on.
+
+## Cloud deployment (Azure) — recommended
+
+Runs `bridge.py` as a systemd service on a small always-on Ubuntu VM, so
+the Mac SE can reach it from anywhere it has internet access, with no
+Windows PC needed at all. Deployed via the `az` CLI (`winget install
+Microsoft.AzureCLI`); an official Azure Claude Code plugin
+(`claude plugin install azure@claude-plugins-official`) is also available
+for MCP-based interaction, but requires a fresh session to pick up — `az`
+CLI works immediately in any session.
+
+### 1. Generate a bridge password
+
+**Required** — this VM is reachable from the whole internet, not just your
+LAN. Anything random works:
+```powershell
+python -c "import secrets, string; print(''.join(secrets.choice(string.ascii_letters+string.digits) for _ in range(20)))"
+```
+
+### 2. Provision the VM
+
+```bash
+az login   # interactive browser login; if it fails with an MFA/AADSTS50076
+           # error, that's your tenant's conditional access policy — complete
+           # the MFA challenge in the browser, not fixable from the CLI side
+
+az group create --name mac-se-gemini-bridge-rg --location uksouth
+
+az vm create \
+  --resource-group mac-se-gemini-bridge-rg \
+  --name mac-se-bridge-vm \
+  --image Ubuntu2204 \
+  --size Standard_B1ls \
+  --admin-username azureuser \
+  --generate-ssh-keys \
+  --public-ip-sku Standard
+
+az vm open-port --resource-group mac-se-gemini-bridge-rg --name mac-se-bridge-vm --port 6023 --priority 900
+```
+`Standard_B1ls` (1 vCPU, 0.5GB RAM, ~$3.80/month) is Azure's cheapest
+tier — plenty for a stdlib-only Python socket server. Port 22/SSH is open
+by default on VM creation; 6023 needs the explicit `open-port` call.
+
+### 3. Deploy the bridge
+
+```bash
+VM_IP=$(az vm show -d -g mac-se-gemini-bridge-rg -n mac-se-bridge-vm --query publicIps -o tsv)
+
+scp bridge.py azureuser@$VM_IP:~/bridge.py
+
+# bridge.env holds secrets — kept out of the systemd unit file itself so
+# they're not visible via `systemctl cat` or the unit file's permissions
+cat > /tmp/bridge.env <<EOF
+GEMINI_API_KEY=your-key-here
+BRIDGE_PASSWORD=the-password-from-step-1
+EOF
+scp /tmp/bridge.env azureuser@$VM_IP:~/bridge.env
+
+ssh azureuser@$VM_IP bash <<'REMOTE'
+sudo mkdir -p /opt/mac-se-bridge
+sudo cp /home/azureuser/bridge.py /opt/mac-se-bridge/bridge.py
+sudo cp /home/azureuser/bridge.env /opt/mac-se-bridge/bridge.env
+sudo chmod 600 /opt/mac-se-bridge/bridge.env
+
+sudo tee /etc/systemd/system/mac-se-bridge.service > /dev/null <<'UNIT'
+[Unit]
+Description=Mac SE Gemini Telnet Bridge
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=/opt/mac-se-bridge/bridge.env
+ExecStart=/usr/bin/python3 /opt/mac-se-bridge/bridge.py
+Restart=always
+RestartSec=5
+User=azureuser
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+sudo systemctl daemon-reload
+sudo systemctl enable mac-se-bridge.service
+sudo systemctl start mac-se-bridge.service
+sudo systemctl status mac-se-bridge.service --no-pager
+REMOTE
+```
+`Restart=always` + `enable` means it survives both crashes and VM reboots
+with no further action needed.
+
+### 4. Auto-shutdown schedule (cost control)
+
+```bash
+az vm auto-shutdown -g mac-se-gemini-bridge-rg -n mac-se-bridge-vm --time 2300
+
+# az vm auto-shutdown's --time is UTC-only with no timezone parameter --
+# setting a fixed UTC offset would drift by an hour at every BST/GMT
+# change. Fix: update the underlying resource directly to set a proper
+# Windows-style timezone ID, so Azure handles DST automatically:
+SCHEDULE_ID=$(az resource list --resource-group mac-se-gemini-bridge-rg \
+  --resource-type microsoft.devtestlab/schedules --query "[0].id" -o tsv)
+az resource update --ids "$SCHEDULE_ID" \
+  --set properties.timeZoneId="GMT Standard Time" properties.dailyRecurrence.time="2300"
+```
+This only handles scheduled **shutdown** (11pm UK time in this example).
+There's no Azure equivalent one-liner for scheduled **start** — the VM
+can't wake itself while off, so auto-start at a fixed morning time needs a
+separate always-on trigger (an Azure Automation Account with a scheduled
+runbook calling `Start-AzVM`/`az vm start`). **Deferred as a stretch
+goal** — manual start in the meantime:
+```bash
+az vm start -g mac-se-gemini-bridge-rg -n mac-se-bridge-vm
+```
+
+### Useful commands
+
+```bash
+# check the bridge's own logs
+ssh azureuser@$VM_IP sudo journalctl -u mac-se-bridge.service -f
+
+# restart after changing bridge.py or bridge.env
+ssh azureuser@$VM_IP sudo systemctl restart mac-se-bridge.service
+
+# stop billing entirely (destroys the VM disk too -- re-provision from
+# scratch to bring it back; use `az vm deallocate` instead if you just
+# want to pause without deleting anything)
+az group delete --name mac-se-gemini-bridge-rg
+```
+
 ## Connecting from the Mac SE
 
-In BetterTelnet: new session, **Host = this PC's LAN IP** (currently
-`192.168.1.158` — check with `(Get-NetIPAddress -AddressFamily IPv4
--InterfaceAlias "WiFi").IPAddress` if it may have changed), **Port = 6023**
-(easy to miss — BetterTelnet's default is 23, and leaving it there gives a
-misleading "host not responding" error since nothing's listening on 23).
+In BetterTelnet (System 7.1) or NCSA Telnet (System 6.0.8): new session,
+**Host** = either the Azure VM's public IP (recommended — works from
+anywhere) or a Windows PC's LAN IP if using the local fallback setup
+(check with `(Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias
+"WiFi").IPAddress` if it may have changed), **Port = 6023** (easy to miss —
+both clients default to port 23, and leaving it there gives a misleading
+"host not responding" error since nothing's listening on 23).
+
+If `BRIDGE_PASSWORD` is set, you'll be prompted for it immediately after
+connecting, before the chat banner appears.
 
 Once connected: type a message, press Return, wait for the reply. Commands:
 - `/reset` — clear conversation history for this connection

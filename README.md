@@ -11,8 +11,10 @@ NetPresenz — see below for why NetPresenz specifically can't run there).
 
 Full narrative of how all of this actually got built — including several
 wrong turns and how they were diagnosed — is in
-[`SESSION_SUMMARY.md`](./SESSION_SUMMARY.md). This README is the map of the
-repo and the practical "how do I run/rebuild this" reference.
+[`SESSION_SUMMARY.md`](./SESSION_SUMMARY.md). For a visual overview with
+architecture diagrams, see [`ARCHITECTURE.md`](./ARCHITECTURE.md). This
+README is the map of the repo and the practical "how do I run/rebuild
+this" reference.
 
 ## Layout
 
@@ -59,12 +61,15 @@ NCSA Telnet lineage.
 ## `bridge/` — the AI chat bridge
 
 See [`bridge/README.md`](./bridge/README.md) for full setup/operations docs
-(architecture, the exact firewall rule needed, every PowerShell command,
-how to move it to a new machine). Short version: a Python script (stdlib
-only, no dependencies) runs on a Windows PC on the same LAN, listens on a
-plain TCP port, and relays whatever's typed into a Telnet client on the SE
-(**BetterTelnet**, also included here as `BetterTelnet.bin`) to the Gemini
-API and back.
+(architecture, Azure deployment commands, the Windows firewall rule needed
+for the local fallback option, how to move it to a new machine). Short
+version: a Python script (stdlib only, no dependencies) listens on a plain
+TCP port and relays whatever's typed into a Telnet client on the SE to the
+Gemini API and back. **Runs on an always-on Azure VM** (recommended — the
+SE can reach it from anywhere it has internet access, no LAN required) or
+on a Windows PC on the same LAN as a local/dev fallback. Password-protected
+(`BRIDGE_PASSWORD`) since the Azure deployment is reachable from the whole
+internet, not just a trusted LAN.
 
 **BetterTelnet** is the Gemini chat client on the **System 7.1** side —
 works great there. It does *not* work on the System 6.0.8 side on this
@@ -176,4 +181,6 @@ host).
   on) as both FTP server and Gemini bridge client — NetPresenz and
   BetterTelnet both turned out to be non-starters here, see
   `SESSION_SUMMARY.md`
-- A modern PC on the same LAN running the Python bridge to Gemini
+- An Azure VM (Standard_B1ls, Ubuntu 22.04, ~$3.80/month) running the
+  Python bridge to Gemini as a systemd service — or a Windows PC on the
+  same LAN as a local fallback

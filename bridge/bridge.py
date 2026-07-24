@@ -8,11 +8,13 @@ negotiation to keep real telnet clients happy, reads lines of text, and
 forwards each line (with growing conversation context) directly to the
 Gemini API over HTTPS (google's REST endpoint, no CLI/Node dependency).
 """
+import hmac
 import json
 import os
 import socket
 import sys
 import threading
+import time
 import urllib.request
 import urllib.error
 
@@ -25,6 +27,14 @@ GEMINI_URL = (
     f"https://generativelanguage.googleapis.com/v1beta/models/"
     f"{GEMINI_MODEL}:generateContent"
 )
+
+# If set, clients must enter this password before they can chat. Strongly
+# recommended when the bridge is reachable beyond a trusted LAN (e.g.
+# hosted on a public cloud VM) -- without it, anyone who finds the IP/port
+# can burn your Gemini API quota. Leave unset for local-LAN-only use.
+BRIDGE_PASSWORD = os.environ.get("BRIDGE_PASSWORD", "")
+MAX_PASSWORD_ATTEMPTS = 3
+FAILED_LOGIN_DELAY_S = 2  # slow down brute-forcing a little
 
 IAC = 0xFF
 WILL, WONT, DO, DONT = 0xFB, 0xFC, 0xFD, 0xFE
@@ -134,64 +144,102 @@ def to_mac_lines(text: str) -> bytes:
     return normalized.replace("\n", "\r\n").encode("mac_roman", errors="replace")
 
 
+def iter_lines(conn: socket.socket):
+    """Yield decoded, stripped lines from conn as they arrive, handling
+    Telnet IAC negotiation and buffering across recv() calls. Stops when
+    the connection closes."""
+    buf = bytearray()
+    while True:
+        chunk = conn.recv(4096)
+        if not chunk:
+            return
+
+        clean = strip_telnet_negotiation(conn, chunk)
+        buf.extend(clean)
+
+        while True:
+            idx = None
+            for sep in (b"\r\n", b"\n", b"\r"):
+                p = buf.find(sep)
+                if p != -1 and (idx is None or p < idx[0]):
+                    idx = (p, len(sep))
+            if idx is None:
+                break
+            pos, seplen = idx
+            line_bytes = bytes(buf[:pos])
+            del buf[: pos + seplen]
+
+            try:
+                line = line_bytes.decode("mac_roman", errors="replace").strip()
+            except Exception:
+                line = line_bytes.decode("ascii", errors="replace").strip()
+
+            yield line
+
+
+def authenticate(conn: socket.socket, lines) -> bool:
+    """If BRIDGE_PASSWORD is set, prompt for it and check up to
+    MAX_PASSWORD_ATTEMPTS times. Returns True if the client may proceed."""
+    if not BRIDGE_PASSWORD:
+        return True
+
+    for attempt in range(1, MAX_PASSWORD_ATTEMPTS + 1):
+        conn.sendall(b"Password: ")
+        try:
+            entered = next(lines)
+        except StopIteration:
+            return False
+
+        if hmac.compare_digest(entered, BRIDGE_PASSWORD):
+            return True
+
+        time.sleep(FAILED_LOGIN_DELAY_S)
+        if attempt < MAX_PASSWORD_ATTEMPTS:
+            conn.sendall(b"\r\nIncorrect.\r\n")
+
+    conn.sendall(b"\r\nToo many incorrect attempts.\r\n")
+    return False
+
+
 def handle_client(conn: socket.socket, addr):
     print(f"[+] connection from {addr}")
-    conn.sendall(BANNER.encode("ascii"))
+    lines = iter_lines(conn)
 
+    if not authenticate(conn, lines):
+        print(f"    {addr} failed authentication")
+        conn.close()
+        return
+
+    conn.sendall(BANNER.encode("ascii"))
     history = []
-    buf = bytearray()
 
     try:
-        while True:
-            chunk = conn.recv(4096)
-            if not chunk:
-                break
+        for line in lines:
+            if not line:
+                conn.sendall(b"\r\n> ")
+                continue
 
-            clean = strip_telnet_negotiation(conn, chunk)
-            buf.extend(clean)
+            print(f"    {addr} > {line}")
 
-            while True:
-                idx = None
-                for sep in (b"\r\n", b"\n", b"\r"):
-                    p = buf.find(sep)
-                    if p != -1 and (idx is None or p < idx[0]):
-                        idx = (p, len(sep))
-                if idx is None:
-                    break
-                pos, seplen = idx
-                line_bytes = bytes(buf[:pos])
-                del buf[: pos + seplen]
+            if line.lower() in ("/quit", "/exit", "quit", "exit"):
+                conn.sendall(b"\r\nbye!\r\n")
+                conn.close()
+                return
 
-                try:
-                    line = line_bytes.decode("mac_roman", errors="replace").strip()
-                except Exception:
-                    line = line_bytes.decode("ascii", errors="replace").strip()
+            if line.lower() == "/reset":
+                history.clear()
+                conn.sendall(b"\r\n[history cleared]\r\n> ")
+                continue
 
-                if not line:
-                    conn.sendall(b"\r\n> ")
-                    continue
+            history.append(("user", line))
+            reply = call_gemini(history)
+            history.append(("assistant", reply))
+            if len(history) > 20:
+                history[:] = history[-20:]
 
-                print(f"    {addr} > {line}")
-
-                if line.lower() in ("/quit", "/exit", "quit", "exit"):
-                    conn.sendall(b"\r\nbye!\r\n")
-                    conn.close()
-                    return
-
-                if line.lower() == "/reset":
-                    history.clear()
-                    conn.sendall(b"\r\n[history cleared]\r\n> ")
-                    continue
-
-                history.append(("user", line))
-                reply = call_gemini(history)
-                history.append(("assistant", reply))
-                if len(history) > 20:
-                    history[:] = history[-20:]
-
-                conn.sendall(b"\r\n")
-                conn.sendall(to_mac_lines(reply))
-                conn.sendall(b"\r\n\r\n> ")
+            conn.sendall(b"\r\n")
+            conn.sendall(to_mac_lines(reply))
+            conn.sendall(b"\r\n\r\n> ")
 
     except (ConnectionResetError, BrokenPipeError):
         pass
