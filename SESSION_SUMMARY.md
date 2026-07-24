@@ -4,6 +4,48 @@ Goal: get a real 1987 Macintosh SE (System 7.1, BlueSCSI SD-card storage) runnin
 NetPresenz as an FTP server, then extend it with a Gemini/Claude AI chat bridge
 over Telnet.
 
+## ⏸ CHECKPOINT — end of session, picking up "file system stuff" next
+
+**Confirmed fully working, right now, from the real hardware**: an actual
+established connection was seen on the Azure VM
+(`86.136.207.207:1314 → 6023`, source port telltale of genuine old MacTCP,
+not a testing tool) — the Mac SE is chatting with Gemini through the cloud
+bridge, laptop-independent, as intended.
+
+**Current state:**
+- Azure VM (`mac-se-bridge-vm`, `Standard_B1ls`, UK South) running
+  `bridge.py` as a systemd service with `BRIDGE_PASSWORD` set to a value
+  chosen mid-session (not repeated here — this repo is **public**; the
+  value only exists in `/opt/mac-se-bridge/bridge.env` on the VM and in
+  this chat's own history, not in git).
+- Auto-**shutdown** was set up (11pm UK time, DST-aware) then explicitly
+  **disabled** at the user's request — cost isn't a concern (~£120/month
+  free credit from the Visual Studio subscription covers this easily), so
+  the VM now just runs continuously.
+- Found the OS disk defaulted to **Premium SSD** (~$6.39/mo) when Azure
+  provisioned it — not a deliberate choice, and this workload doesn't need
+  it. Switching to Standard HDD (~$1.69/mo) was offered as a no-downside
+  optimization but **not done** — user said cost is fine given the free
+  credit, so this is purely optional cleanup if picked up later.
+- Just changed the systemd unit to use `python3 -u` (unbuffered output) so
+  future connections actually show up in `journalctl` — **staged but not
+  yet applied**, since applying it needs a service restart and there was a
+  live user connection at the time. Takes effect on the next natural
+  restart (VM reboot, next `bridge.env` change, etc.).
+- Local Windows-hosted bridge instance may still be running as a fallback
+  — not explicitly stopped, since the cloud one was only just confirmed
+  working from real hardware this session.
+
+**Next session: Phase 2** — give the Gemini bridge SE filesystem access by
+exposing `mac_ftp.py`'s operations as Gemini function-calling tools (full
+plan already written up in "Outstanding TODO" further down). Before
+wiring anything up to an LLM that can call it autonomously, finish testing
+`mac_ftp.py`'s untested operations (`get`, `rm`, `rmdir`, `rename`,
+`put-app`) — only `ls`/`mkdir`/`put` are confirmed working so far. Also
+still outstanding: **Phase 3**, scheduled VM auto-start (deferred, no
+Azure one-liner exists, needs an Automation Account runbook) — see its own
+section in "Outstanding TODO".
+
 ## Status: working end-to-end, now on two OSes
 
 The Mac SE dual-boots **System 7.1** (NetPresenz FTP server, BetterTelnet,
