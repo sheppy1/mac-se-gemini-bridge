@@ -41,7 +41,7 @@ This file is the "how to run/rebuild the bridge itself" reference.
   trusted LAN — see the Azure section below for why.
 - Per line received, the bridge POSTs the whole conversation-so-far to
   Google's `generativelanguage.googleapis.com` REST API (model
-  `gemini-flash-latest`) using only Python's built-in `urllib` — **no Node.js,
+  `gemini-flash-lite-latest`) using only Python's built-in `urllib` — **no Node.js,
   npm, or the `gemini` CLI are required**. (We started out shelling out to the
   official `gemini` CLI; it turned out to hang unpredictably for reasons
   unrelated to the API itself, so the bridge now calls the REST endpoint

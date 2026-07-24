@@ -22,7 +22,7 @@ HOST = "0.0.0.0"
 PORT = 6023
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = "gemini-flash-latest"
+GEMINI_MODEL = "gemini-flash-lite-latest"
 GEMINI_URL = (
     f"https://generativelanguage.googleapis.com/v1beta/models/"
     f"{GEMINI_MODEL}:generateContent"
