@@ -4,13 +4,17 @@ Goal: get a real 1987 Macintosh SE (System 7.1, BlueSCSI SD-card storage) runnin
 NetPresenz as an FTP server, then extend it with a Gemini/Claude AI chat bridge
 over Telnet.
 
-## Status: working end-to-end
+## Status: working end-to-end, now on two OSes
 
-As of the latest session, the whole thing works: the Mac SE runs NetPresenz
-(FTP server) and BetterTelnet, and can chat with Gemini through `bridge.py`
-running on this PC. See "Post-summary developments" further down for how the
-remaining issues below this line were resolved, and `README.md` for the
-setup/operations reference.
+The Mac SE dual-boots **System 7.1** (NetPresenz FTP server, BetterTelnet,
+Gemini bridge — all working) and, as of this session, **System 6.0.8** too
+(networking via BlueSCSI's WiFi DaynaPORT emulation, also now working, plus
+BetterTelnet with its built-in FTP server as the System-6-compatible
+alternative to NetPresenz, which cannot run on System 6 at all — see
+"System 6.0.8 + DaynaPORT" section below for the full story and why).
+See "Post-summary developments" and the new System 6.0.8 section further
+down for how everything below this line got resolved, and `README.md` for
+the setup/operations reference.
 
 ## Loose ends still worth tidying up
 
@@ -28,6 +32,14 @@ setup/operations reference.
 - **`bridge.py` doesn't yet run persistently across reboots/logoff** — see
   README's "Run persistently" section for the Scheduled Task approach
   (documented but not yet applied).
+- **`mac_ftp.py` is only partially tested** (`ls`/`mkdir`/`put` confirmed,
+  `get`/`rm`/`rmdir`/`rename`/`put-app` not yet exercised) — see its section
+  below before hammering the SE with it again.
+- **A GitHub personal access token was pasted into a chat session in
+  plaintext** to authenticate `gh` — it had far broader scopes than needed
+  (`admin:org`, `delete_repo`, `admin:enterprise`, etc.) and should be
+  regenerated with minimal (`repo`-only) scope at
+  github.com/settings/tokens.
 
 ## 1. Extracting NetPresenz from the original StuffIt archive
 
@@ -205,7 +217,8 @@ up") — persistent-run setup and the security reverts.
 | `mac-se-gemini-bridge\bridge.py` | Telnet-to-Gemini bridge server (now calls the Gemini REST API directly — no Node/CLI dependency, see below) |
 | `mac-se-gemini-bridge\BetterTelnet.bin` | Telnet client already uploaded and running on the SE |
 | `mac-se-gemini-bridge\README.md` | **Setup/operations reference** — firewall rule, PowerShell commands, how to start/stop/move the bridge |
-| `mac-se-gemini-bridge\tools\` | Reusable packaging scripts (MacBinary encoder, AppleDouble parser, Disk Copy 4.2 wrapper, resource-fork sanity checker) |
+| `mac-se-gemini-bridge\tools\` | Reusable packaging scripts (MacBinary encoder, AppleDouble parser, Disk Copy 4.2 wrapper, resource-fork sanity checker, plus `mac_ftp.py` — see below) |
+| `mac-se-gemini-bridge\tools\mac_ftp.py` | FTP-based remote filesystem CLI for the SE (active-mode, retry-safe) — partially tested, see its section below |
 
 Scratch/investigation files from the session (downloaded archives, failed
 download attempts, retry logs) have been cleaned up — see `README.md` for
@@ -242,3 +255,209 @@ reflected in the numbered sections above:
   PC) → Gemini API → back. Bridge is not yet set up to run persistently
   across reboots (see README's "Run persistently" section for the
   not-yet-applied Scheduled Task approach).
+
+## `mac_ftp.py` — an FTP-based remote filesystem tool for the SE
+
+Added `tools/mac_ftp.py`: a CLI wrapping Python's `ftplib`, purpose-built
+around everything learned about this specific NetPresenz/MacTCP setup —
+forces **active-mode FTP** (required, see the FTP troubleshooting section
+above), and reconnects with a **fresh connection on every retry** rather
+than retrying on a stale one (a real bug found and fixed during testing:
+retrying on the same connection after a timeout left it in an unrecoverable
+"cannot read from timed out object" state, even though the server side was
+fine). Supports `ls`, `get`/`put` (plain files), `put-app` (builds a
+MacBinary on the fly via `make_macbinary.py` and uploads as `.bin` for
+NetPresenz's automatic server-side decode), `rm`, `mkdir`, `rmdir`,
+`rename`.
+
+**Testing status**: `ls`, `mkdir`, and `put` all confirmed working live
+against the SE. `get`, `rm`, `rmdir`, `rename`, and `put-app` are
+implemented but not yet exercised — testing was paused mid-way after
+NetPresenz crashed with an Address Error, traced to sheer connection volume
+(10+ full connect/login cycles in quick succession against 1997-era
+software on a maxed-out 4MB machine) rather than a bug in the tool itself.
+Lesson: this hardware cannot absorb rapid automated retries the way a
+modern server can — go easy on it, one operation at a time, when resuming
+this testing.
+
+## System 6.0.8 + DaynaPORT: a whole separate saga
+
+Motivation: System 6.0.8 is much lighter than 7.1 and noticeably snappier
+on this 4MB machine; general performance, not networking specifically, was
+the main driver (BlueSCSI's WiFi DaynaPORT emulation has a fixed ~60KB/sec
+throughput ceiling regardless of OS version, per BlueSCSI's own docs, so
+switching OS was never going to speed up the network itself).
+
+**Setup, per BlueSCSI's own docs** (`bluescsi.com/docs/WiFi-DaynaPORT`):
+needs MacTCP 2.1 specifically (not just "MacTCP") and the "DaynaPORT 7.5.3"
+driver package (a version *label*, not an actual System 7.5.3 requirement —
+same naming trap as below). BlueSCSI mounts every configured SCSI ID
+simultaneously regardless of which one you booted from, which matters a lot
+below.
+
+### The installer size bug
+
+The DaynaPORT installer kept failing with bogus "not enough space" errors
+(e.g. "76k available, you will need 745k") on volumes that were actually
+nearly empty (confirmed via Get Info — a fresh 264MB volume showing ~38MB
+genuinely free was reported as having 257KB by the installer, and even a
+**plain Finder file copy** hit the same wrong numbers). This is a
+now-fixed-in-hindsight class of bug: 1990s Mac installers/Finder-adjacent
+tools using undersized integer arithmetic for free-space calculations,
+which breaks down well before the notorious 2GB ceiling — anywhere from
+roughly 85MB up, depending on the specific software. (A related, distinct,
+well-documented 1993 HFS bug affects volumes specifically in the 85–95MB
+range at 1.5K allocation blocks — different mechanism, same causal
+category: old arithmetic, small volumes.)
+
+Ruled out one by one before finding the real fix:
+- Hiding other large mounted volumes (HD00 at 2GB, later HD30 Bootstrap at
+  536MB) — no effect.
+- Disk First Aid — reported the volume as structurally clean (no repairs
+  needed), so it wasn't catalog/extents corruption.
+- Hiding the `NE4.hda` WiFi DaynaPORT device placeholder — no effect (rules
+  out a suspected class of BlueSCSI firmware bug, documented in a
+  TinkerDifferent thread, where disk-specific config bleeds into the
+  network device's emulation).
+- Confirmed via research this is a recognized *class* of problem in the
+  BlueSCSI/DaynaPORT community (see e.g.
+  `tinkerdifferent.com/threads/bluescsi-in-quadra-annihilating-system-folder-daynaport.3383`
+  and a ZuluSCSI firmware discussion about disk config leaking into network
+  device emulation) — never fully root-caused even by the people who hit it.
+
+**What actually worked**: install DaynaPORT onto a target volume that
+already has a valid System Folder on it (the installer requires this as a
+precondition — it won't target a blank data volume), sized in a safe range
+(80MB — comfortably clear of both the 85–95MB historical danger zone and
+the multi-hundred-MB+ zone where the bogus-space bug reappeared), and
+**freshly reformatted from scratch** rather than reusing/resizing an
+existing volume, since a corrupted/stale free-space cache from however the
+volume was originally created (not caught by Disk First Aid) was the
+real, if never 100%-pinned-down, root cause.
+
+Formatting tool compatibility turned out to matter a lot:
+- **Drive Setup** (1.5 and 1.7.3): System 7-only, doesn't run on System 6
+  at all.
+- **HD SC Setup 7.3.5**: the "7.3.5" is a version *label*, not an OS
+  requirement (this is Apple's actual System-6-era SCSI utility) — but it
+  failed with "unable to mount volume" after seemingly writing the
+  partition/driver, on this specific BlueSCSI setup.
+- **LIDO7**: successfully wrote the partition map, but then initializing
+  failed with "not enough memory for driver, try booting from floppy" — a
+  genuine low-RAM issue (LIDO's driver-install step needs more free RAM
+  than a loaded System 6.0.8 session had available on this 4MB machine).
+- **Silverlining 5.6.3**: worked. Asked for a generic/manual drive-model
+  selection (no real physical drive to match an emulated device against),
+  then successfully partitioned and initialized the volume in its Volume
+  Manager screen. This is now the recommended tool for this setup.
+  (Its driver displays its own splash icon during boot, before the Finder
+  loads — normal/expected behavior for any third-party SCSI driver, not a
+  bug, and not worth risking the working setup to remove.)
+
+Once formatted fresh with Silverlining, the DaynaPORT Custom install
+(Customize → **SCSI/Link only**, never Easy Install — Easy Install tries to
+overwrite newer Network software and errors out) completed successfully on
+the first real attempt.
+
+**Getting the driver files without mounting the whole Bootstrap image**:
+the 536MB `HD30_BlueSCSI Bootstrap.hda` volume being mounted was an early
+suspect for the size bug (later ruled out, but avoided anyway out of an
+abundance of caution). Rather than mount it as a live SCSI device, its HFS
+contents were read directly with `hfsutils` (same Docker-based approach
+used throughout this project) and the four needed files extracted as
+MacBinary straight into the SD card's `shared` folder (BlueSCSI's
+plain-FAT drop-folder, readable directly from the Mac without needing a
+SCSI mount):
+`BlueSCSI PicoW Setup:DaynaPORT:DaynaPORT 7.5.3-DiskCopy4.img`,
+`BlueSCSI PicoW Setup:MacTCP Setup:MacTCP`,
+`BlueSCSI PicoW Setup:MacTCP Setup:MacTCP Ping`, and
+`Stuff:Images:System 6:MountImage 1.2b2` (the last one needed specifically
+because System 6, unlike 7.x, can't run an installer from inside a mounted
+disk image without this cdev to mount it in the first place). Note:
+BlueSCSI's shared-folder transfer only supports individual files, not
+folders — everything has to sit loose at the folder root.
+
+**Final gotcha**: after a successful install and restart, MacTCP still only
+showed LocalTalk, no Ethernet option. Cause: the System Folder copied over
+from backup already had an old **MacTCP 2.0.6** in it, and the required
+**MacTCP 2.1** (extracted from the bootstrap image, sitting unused in
+`shared`) had never actually been installed over it. Once 2.1 replaced
+2.0.6 and the Mac was restarted again, "Ethernet Built-In" appeared, MacTCP
+was configured (subnet `255.255.255.0`, router, DNS `1.1.1.1`), and MacTCP
+Ping confirmed working connectivity. Note: the static IP ended up as
+`192.168.1.210` — same address the 7.1 side uses, carried over from the
+copied System Folder's MacTCP prefs. Not a real conflict since the SE only
+runs one OS at a time (dual-boot, not simultaneous), but worth remembering
+when connecting to it: whichever OS is actually booted owns that address.
+
+### NetPresenz cannot run on System 6 — important, easy to forget
+
+Spent some effort trying to get `NetPresenz.dsk.bin` (built for the 7.1
+side) working on 6.0.8 via StuffIt Expander before remembering: NetPresenz's
+own documentation states it **requires System 7** specifically, because it
+depends entirely on System 7's Personal File Sharing for authentication and
+file access — a feature that doesn't exist in System 6 at all. No amount of
+successful file transfer would have made it run. This isn't fixable; don't
+attempt it again for a System 6 target.
+
+**First attempt — BetterTelnet's built-in FTP server**: it has one,
+inherited directly from its NCSA Telnet lineage — confirmed via strings
+search of its resource fork (`"220 Macintosh Resident FTP server, ready"`,
+dedicated `FTP Server Prefs` / `FTP Server` menu items). `BetterTelnet.bin`
+was copied into the SD card's `shared` folder (not previously there — the
+7.1 copy was installed via direct FTP upload, which 6.0.8 had no equivalent
+path for yet) and installed the same way as the DaynaPORT files.
+
+**BetterTelnet crashed on the stock Mac SE under 6.0.8**, though — launches
+fine, but the cursor never renders, and clicking anything eventually
+crashes with a **"coprocessor not installed"** error and a restart. Same
+exact binary works fine on the 7.1 side of the same physical machine, so
+it's not a raw CPU-instruction incompatibility (the 68000 hardware is
+identical either way) — the leading theory is Color QuickDraw: BetterTelnet's
+resource fork has 3 color-cursor (`crsr`) resources, and a stock Mac SE's
+ROM has no Color QuickDraw support at all (it predates any color-capable
+Mac hardware). Something in a failed `SetCCursor`-style call likely cascades
+into the coprocessor trap. Not investigated further/fixed — moved to
+sourcing the real, older program instead.
+
+**Second attempt — genuine NCSA Telnet — worked.** Sourcing it was its own
+small detour: every direct download source (Macintosh Repository, Higher
+Intellect/preterhuman.net, archive.info-mac.org) was gated behind
+JS/anti-bot pages or Cloudflare blocking plain `curl`. Fix: the **Wayback
+Machine bypasses this cleanly** — `web.archive.org`'s CDX API
+(`web.archive.org/cdx/search/cdx?url=...`) can locate old snapshots of a
+known blocked URL, and fetching the snapshot URL directly returns the
+original file with a clean `200`, no bot-gating at all, since it's served
+from Archive.org's own infrastructure rather than the live (blocked) site.
+Got **NCSA Telnet 2.7b4** this way (a compiled binary of the true 2.6 was
+not available in the same archive, only source code — 2.7b4 was the
+closest real compiled option). It *also* has 3 `crsr` (color cursor)
+resources in its resource fork, so the "avoid Color QuickDraw" theory isn't
+airtight — but it was tested directly rather than over-analyzed further,
+and it **launched and ran with no crash**, cursor and all. Same
+extraction/repackaging pipeline as everything else in this project
+(`unar` → `extract_appledouble.py` → `parse_rsrc.py` sanity check →
+`make_macbinary.py`, type `APPL` creator `NCSA`), dropped into `shared`,
+installed via StuffIt Expander.
+
+FTP server setup in NCSA Telnet: Edit menu → Preferences → **FTP Users**
+(set a username/password/directory — used `mac`/`admin` this session) →
+**FTP Server** to toggle it on. Unlike NetPresenz, this needs **no Mac OS
+Sharing Setup / File Sharing at all** — the FTP server is fully
+self-contained inside the app, managing its own user list and speaking FTP
+protocol directly, which is exactly why it can run on System 6 in the
+first place (NetPresenz can't, precisely because it depends on File
+Sharing). Tested and confirmed working end-to-end from this PC (active
+mode, same as the 7.1/NetPresenz setup) — clean login, directory listing
+returned (`Apps/`, `System Folder/`).
+
+Both OS environments on the SE now have working FTP servers: **NetPresenz**
+on 7.1, **NCSA Telnet's built-in server** on 6.0.8. Note both currently
+report the same IP (`192.168.1.210`) since they're not running
+simultaneously — see the note in the DaynaPORT section above.
+
+NCSA Telnet was also confirmed working as the 6.0.8-side Gemini bridge
+client (same `bridge.py`, host `192.168.1.158` port `6023`, no server-side
+changes needed — the bridge is client-agnostic). **Both OS environments on
+the SE are now fully working end-to-end**: FTP serving and Gemini chat, on
+System 7.1 and System 6.0.8 alike.

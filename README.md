@@ -1,9 +1,13 @@
 # Mac SE Retro Project
 
-Getting a real 1987 Macintosh SE (68000 CPU, System 7.1, BlueSCSI SD-card
-storage in place of a SCSI hard disk) running as a live FTP server on a
-modern LAN, then extending it so it can "chat with AI" through a Telnet
-client talking to a small bridge that calls the Gemini API.
+Getting a real 1987 Macintosh SE (68000 CPU, BlueSCSI SD-card storage in
+place of a SCSI hard disk) running as a live FTP server on a modern LAN,
+then extending it so it can "chat with AI" through a Telnet client talking
+to a small bridge that calls the Gemini API. The SE dual-boots **System
+7.1** (NetPresenz FTP server, BetterTelnet, the Gemini bridge) and
+**System 6.0.8** (BlueSCSI WiFi DaynaPORT networking, BetterTelnet with its
+own built-in FTP server as the System-6-compatible alternative to
+NetPresenz — see below for why NetPresenz specifically can't run there).
 
 Full narrative of how all of this actually got built — including several
 wrong turns and how they were diagnosed — is in
@@ -35,12 +39,22 @@ tools/        Reusable Python scripts for packaging classic Mac software
   metadata, then gets its type/creator restored by StuffIt Expander on the
   Mac side.
 
-This is running live on the SE, serving FTP (and could serve WWW/Gopher too)
-over the LAN via **MacTCP** (this SE's 68000 CPU is below Open Transport's
-official 68030 minimum, so MacTCP is the only option). See
-`SESSION_SUMMARY.md` for the whole saga of getting this working reliably —
-short version: the config was always correct, the real culprit was MacTCP's
-poor handling of passive-mode FTP, fixed by using active mode.
+This is running live on the SE's **System 7.1** side, serving FTP (and
+could serve WWW/Gopher too) over the LAN via **MacTCP** (this SE's 68000
+CPU is below Open Transport's official 68030 minimum, so MacTCP is the only
+option). See `SESSION_SUMMARY.md` for the whole saga of getting this
+working reliably — short version: the config was always correct, the real
+culprit was MacTCP's poor handling of passive-mode FTP, fixed by using
+active mode.
+
+**Important: NetPresenz cannot run on System 6.** Its own documentation
+states it requires System 7, because it depends entirely on System 7's
+Personal File Sharing for authentication and file access — a feature that
+doesn't exist in System 6 at all. This isn't a packaging or compatibility
+quirk to work around; don't spend time trying. For FTP serving on the
+System 6.0.8 side, use **BetterTelnet's built-in FTP server** instead (see
+below) — the period-correct System-6-era equivalent, inherited from its
+NCSA Telnet lineage.
 
 ## `bridge/` — the AI chat bridge
 
@@ -51,6 +65,25 @@ only, no dependencies) runs on a Windows PC on the same LAN, listens on a
 plain TCP port, and relays whatever's typed into a Telnet client on the SE
 (**BetterTelnet**, also included here as `BetterTelnet.bin`) to the Gemini
 API and back.
+
+**BetterTelnet** is the Gemini chat client on the **System 7.1** side —
+works great there. It does *not* work on the System 6.0.8 side on this
+particular stock Mac SE: launches, but the cursor never renders and it
+crashes with a "coprocessor not installed" error on interaction (leading
+theory: it has color-cursor resources, and this SE's ROM has no Color
+QuickDraw support at all — see `SESSION_SUMMARY.md` for the full
+investigation). Same binary, same physical CPU, only fails on 6.0.8, so
+it's environment-dependent, not a hard CPU-instruction wall.
+
+For **System 6.0.8**, use **`NCSA Telnet.bin`** instead (also included
+here) — the genuine original 1995 program BetterTelnet was built on,
+sourced via the Wayback Machine after every live download source turned
+out to be bot-gated (see `SESSION_SUMMARY.md` for that whole detour). It
+launched with no crash and works as both the Gemini bridge client *and*
+an FTP server (Edit menu → Preferences → FTP Users to set up an account,
+then FTP Server to toggle it on) — the period-correct System-6-era
+equivalent to NetPresenz, since NetPresenz itself cannot run on System 6
+at all (see above).
 
 ## `tools/` — reusable classic Mac packaging scripts
 
@@ -92,6 +125,24 @@ software. All pure Python 3 stdlib, no dependencies.
   header offsets are sane before trusting a build.
   `python parse_rsrc.py file.rsrc [file2.rsrc ...]`
 
+- **`mac_ftp.py`** — CLI for managing files on the SE over FTP without
+  relearning this project's hard-won lessons every time: forces
+  **active-mode FTP** (required for this MacTCP setup — passive mode
+  stalls/hangs), and reconnects fresh on every retry instead of retrying on
+  a connection a previous failure may have left in a broken state. Supports
+  `ls`, `get`, `put`, `put-app` (builds+uploads a MacBinary `.bin` on the
+  fly for NetPresenz's auto-decode), `rm`, `mkdir`, `rmdir`, `rename`.
+  ```
+  python mac_ftp.py ls
+  python mac_ftp.py put-app --data App --rsrc App.rsrc --name App --type APPL --creator XXXX
+  ```
+  **Note**: only `ls`/`mkdir`/`put` are confirmed working live against the
+  SE so far; `get`/`rm`/`rmdir`/`rename`/`put-app` are implemented but
+  untested. Also: don't hammer this hardware with rapid automated retries —
+  a burst of ~10 connection attempts in quick succession crashed NetPresenz
+  once already (Address Error, traced to connection volume on a
+  maxed-out-4MB 1997-era-software combination, not a tool bug).
+
 ### Typical workflow for packaging a new piece of classic Mac software
 
 Given something downloaded as a `.sit`/`.hqx`:
@@ -113,9 +164,16 @@ host).
 
 ## Hardware/software involved
 
-- Macintosh SE (1987), 68000 CPU, System 7.1
-- BlueSCSI (SD card as SCSI storage, in place of a real hard disk)
-- MacTCP (Open Transport isn't available on this CPU)
-- NetPresenz 4.1 (FTP/WWW/Gopher server)
-- BetterTelnet (Telnet client, freeware successor to NCSA Telnet)
+- Macintosh SE (1987), 68000 CPU, dual-booting System 7.1 and System 6.0.8
+- BlueSCSI (SD card as SCSI storage, in place of a real hard disk), including
+  its WiFi DaynaPORT network emulation feature on the System 6.0.8 side
+- MacTCP on both OS sides (Open Transport isn't available — this CPU is
+  below its official 68030 minimum)
+- **System 7.1**: NetPresenz 4.1 (FTP/WWW/Gopher server), BetterTelnet
+  (Telnet client, freeware successor to NCSA Telnet) as the Gemini bridge
+  client
+- **System 6.0.8**: NCSA Telnet 2.7b4 (the original BetterTelnet is built
+  on) as both FTP server and Gemini bridge client — NetPresenz and
+  BetterTelnet both turned out to be non-starters here, see
+  `SESSION_SUMMARY.md`
 - A modern PC on the same LAN running the Python bridge to Gemini

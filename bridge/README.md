@@ -153,7 +153,8 @@ Once connected: type a message, press Return, wait for the reply. Commands:
 |---|---|
 | `bridge.py` | The bridge server itself. Pure stdlib, no deps. |
 | `bridge.log` / `bridge.log.err` | stdout/stderr when started via `Start-Process` as above. Empty is normal (the script's `print()` calls are line-buffered but infrequent). Not checked into git (see `.gitignore`) — regenerated on each run. |
-| `BetterTelnet.bin` | MacBinary-packaged copy of the Telnet client already installed on the SE. Kept in case it needs re-uploading. |
+| `BetterTelnet.bin` | MacBinary-packaged Telnet client for the SE. Works fine on System 7.1; crashes on this SE's System 6.0.8 (see `../SESSION_SUMMARY.md`). |
+| `NCSA Telnet.bin` | MacBinary-packaged genuine NCSA Telnet 2.7b4 — the System 6.0.8-compatible alternative (bridge client + built-in FTP server). |
 
 See [`../SESSION_SUMMARY.md`](../SESSION_SUMMARY.md) for the full narrative
 and [`../tools/`](../tools/) for the reusable packaging scripts.
