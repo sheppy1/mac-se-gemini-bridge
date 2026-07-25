@@ -4,47 +4,60 @@ Goal: get a real 1987 Macintosh SE (System 7.1, BlueSCSI SD-card storage) runnin
 NetPresenz as an FTP server, then extend it with a Gemini/Claude AI chat bridge
 over Telnet.
 
-## ⏸ CHECKPOINT — end of session, picking up "file system stuff" next
+## ⏸ CHECKPOINT — Phase 2 (file management tools) mostly built
 
-**Confirmed fully working, right now, from the real hardware**: an actual
-established connection was seen on the Azure VM
-(`86.136.207.207:1314 → 6023`, source port telltale of genuine old MacTCP,
-not a testing tool) — the Mac SE is chatting with Gemini through the cloud
-bridge, laptop-independent, as intended.
+**Phase 2 is implemented and locally verified, but not yet live on Azure.**
+Full narrative in "Phase 2: Gemini-driven file management" near the end of
+this file. Short version:
 
-**Current state:**
-- Azure VM (`mac-se-bridge-vm`, `Standard_B1ls`, UK South) running
-  `bridge.py` as a systemd service with `BRIDGE_PASSWORD` set to a value
-  chosen mid-session (not repeated here — this repo is **public**; the
-  value only exists in `/opt/mac-se-bridge/bridge.env` on the VM and in
-  this chat's own history, not in git).
-- Auto-**shutdown** was set up (11pm UK time, DST-aware) then explicitly
-  **disabled** at the user's request — cost isn't a concern (~£120/month
-  free credit from the Visual Studio subscription covers this easily), so
-  the VM now just runs continuously.
-- Found the OS disk defaulted to **Premium SSD** (~$6.39/mo) when Azure
-  provisioned it — not a deliberate choice, and this workload doesn't need
-  it. Switching to Standard HDD (~$1.69/mo) was offered as a no-downside
-  optimization but **not done** — user said cost is fine given the free
-  credit, so this is purely optional cleanup if picked up later.
-- Just changed the systemd unit to use `python3 -u` (unbuffered output) so
-  future connections actually show up in `journalctl` — **staged but not
-  yet applied**, since applying it needs a service restart and there was a
-  live user connection at the time. Takes effect on the next natural
-  restart (VM reboot, next `bridge.env` change, etc.).
-- Local Windows-hosted bridge instance may still be running as a fallback
-  — not explicitly stopped, since the cloud one was only just confirmed
-  working from real hardware this session.
+- `tools/mac_ftp.py` refactored into `tools/mac_ftp_lib.py` (reusable
+  functions) + a thin CLI wrapper, no behavior change for existing manual
+  use.
+- Live-tested the previously-untested operations against the real SE. Big
+  finding: the SE is now stuck on **System 6.0.8** day-to-day (7.1/
+  NetPresenz is too flaky to run) and its NCSA Telnet FTP server only
+  implements `LIST`/`RETR`/`STOR` — `DELE` is cleanly rejected, but `MKD`
+  and `RNFR`/`RNTO` **crash the server outright** (confirmed twice, each
+  needing a physical restart). So `mkdir`/`rmdir`/`rename` are **not**
+  exposed as Gemini tools at all — too risky given the bridge can't know
+  which OS is booted before trying.
+- `bridge.py` now does real Gemini function-calling: `list_files`,
+  `delete_file` (degrades gracefully — currently always reports
+  "unsupported" given the 6.0.8 reality above), `search_software`
+  (archive.org only — Macintosh Garden 403s automated requests),
+  `download_and_install_software` (reuses the existing packaging
+  pipeline). Destructive tools always pause for an explicit "yes" typed at
+  the SE's terminal before executing — verified via the bridge's own
+  connection log that a decline never reaches the SE's FTP server at all.
+- Verified end-to-end against the **local Windows fallback** bridge with a
+  headless test client. Found and fixed a real bug during this: `bridge.py`
+  copied into the local working copy has `tools/` as a *child* directory
+  (`mac-se-gemini-bridge\bridge.py` + `mac-se-gemini-bridge\tools\`), a
+  third layout the original two-candidate `sys.path` logic didn't cover
+  (only handled the flat-Azure-deploy and repo `bridge/`+`../tools`
+  layouts) — silently failed to import `mac_ftp_lib`, producing a
+  misleading "not configured" message that looked like a credentials
+  problem. Fixed by adding the third candidate path.
 
-**Next session: Phase 2** — give the Gemini bridge SE filesystem access by
-exposing `mac_ftp.py`'s operations as Gemini function-calling tools (full
-plan already written up in "Outstanding TODO" further down). Before
-wiring anything up to an LLM that can call it autonomously, finish testing
-`mac_ftp.py`'s untested operations (`get`, `rm`, `rmdir`, `rename`,
-`put-app`) — only `ls`/`mkdir`/`put` are confirmed working so far. Also
-still outstanding: **Phase 3**, scheduled VM auto-start (deferred, no
-Azure one-liner exists, needs an Automation Account runbook) — see its own
-section in "Outstanding TODO".
+**Not yet done**:
+- **Not deployed to Azure** — needs `mac_ftp_lib.py` + its dependencies
+  copied alongside `bridge.py` on the VM, `apt-get install unar`, and
+  `MAC_FTP_HOST`/`USER`/`PASS` set in `bridge.env` (see
+  `bridge/README.md`'s updated deploy steps).
+- **Azure still can't reach the SE at all** even once deployed — it's a
+  private LAN IP behind the home router. Decided approach: a Raspberry Pi
+  4 (1GB) running Tailscale as a subnet router, joining the existing home
+  LAN unchanged (no SE reconfiguration, no exposing the vintage FTP server
+  to the internet). Not physically set up yet — this is the next concrete
+  step before file management works from anywhere but the LAN.
+- `download_and_install_software` implemented but not live-tested (needs
+  `unar` on a Linux host — Windows doesn't have it readily available;
+  deferred to testing on the Azure VM once deployed).
+
+**Phase 3** (scheduled VM auto-shutdown/auto-start) has been dropped
+entirely, not just deferred — user decision, the VM's running cost is
+minimal enough against the free Visual Studio subscription credit that
+scheduling isn't worth the complexity. See "Outstanding TODO" for detail.
 
 ## Status: working end-to-end, now on two OSes
 
@@ -251,40 +264,51 @@ Everything from the original scope is done except the loose ends listed
 above ("Loose ends still worth tidying up") — persistent-run setup and the
 security reverts.
 
-### Phase 2 (not started): give the Gemini bridge SE filesystem access
+### Phase 2 (mostly done): give the Gemini bridge SE filesystem access
 
-Idea: extend `bridge.py` to expose `mac_ftp.py`'s operations (`ls`, `get`,
-`put`, `mkdir`, `rmdir`, `rm`, `rename`, `put-app`) as callable tools via
-Gemini's function-calling/tool-use API support, so a plain-English request
-typed into the terminal (e.g. "what's in the Apps folder?" or "delete that
-old test file") gets carried out directly against the SE's filesystem, with
-the result fed back into the conversation. Rough shape:
+**Implemented and locally verified** — see "Phase 2: Gemini-driven file
+management" near the end of this file for the full narrative. Summary of
+what's actually shipped vs. the original idea below (kept for context):
 
-1. Define each `mac_ftp.py` operation as a Gemini function-calling tool
-   schema (name, description, parameters).
-2. In `bridge.py`'s request loop, pass the tool schemas alongside the
-   conversation; when Gemini's response includes a function call, execute
-   the corresponding `mac_ftp.py` operation (import its functions directly
-   rather than shelling out) and send the result back as a follow-up turn.
-3. Finish testing `mac_ftp.py`'s untested operations first (`get`, `rm`,
-   `rmdir`, `rename`, `put-app` — see its section above) before wiring them
-   up to an LLM that might call them autonomously.
-4. Worth deciding guardrails up front — e.g. should destructive operations
-   (`rm`, `rmdir`) require some form of confirmation before Gemini can
-   trigger them directly, given they'd be running against the only copy of
-   whatever's on that volume.
+- ✅ `list_files`, `delete_file`, `search_software`,
+  `download_and_install_software` implemented as real Gemini
+  function-calling tools in `bridge.py`, backed by the new
+  `tools/mac_ftp_lib.py`.
+- ✅ Destructive-action confirmation gate ("yes" required at the SE's
+  terminal before anything runs).
+- ❌ `mkdir`/`rmdir`/`rename` — **deliberately not implemented**, not just
+  deferred. Live testing found these crash the SE's current FTP server
+  (NCSA Telnet, System 6.0.8) outright, not just get rejected.
+- ⏳ Not yet deployed to Azure, and Azure still has no network path to the
+  SE (Raspberry Pi + Tailscale relay planned, not built) — file management
+  currently only works via the local Windows fallback bridge.
 
-### Phase 3 (not started): scheduled auto-start for the Azure VM
+Original rough shape (steps 1-3 below are done; step 4 answered — yes,
+confirmation required, implemented):
 
-The VM has a working auto-**shutdown** schedule (11pm UK time, DST-aware —
-see the Azure section below), but Azure has no equivalent one-liner for
-auto-**start** (the VM can't wake itself while it's off, so this needs an
-always-on external trigger). Realistic approach: an Azure Automation
-Account with a scheduled runbook calling `Start-AzVM`/`az vm start` at 8am,
-using a system-assigned managed identity scoped to just this VM (avoid a
-broader-permissioned Run-As account). Deliberately deferred — flagged as a
-stretch goal, and the manual-start fallback (`az vm start -g
-mac-se-gemini-bridge-rg -n mac-se-bridge-vm`) works fine in the meantime.
+1. ~~Define each `mac_ftp.py` operation as a Gemini function-calling tool
+   schema~~ — done, scoped down to the 4 tools above after live-testing
+   revealed the mkdir/rename crash risk.
+2. ~~In `bridge.py`'s request loop, pass the tool schemas alongside the
+   conversation...~~ — done, see `call_gemini_with_tools()`.
+3. ~~Finish testing `mac_ftp.py`'s untested operations first~~ — done, see
+   the Phase 2 narrative section for exactly what was found.
+4. ~~Worth deciding guardrails up front~~ — yes: confirmation required for
+   all destructive tools, plus a `PROTECTED_PATH_PREFIXES` check so nothing
+   can touch the System Folder even with confirmation.
+
+### Phase 3 (dropped): scheduled auto-shutdown/auto-start for the Azure VM
+
+Was a stretch goal (11pm shutdown / 8am start) to control costs. Auto-
+shutdown was actually built (DST-aware, via a direct `az resource update`
+on the `microsoft.devtestlab/schedules` resource) but then explicitly
+disabled, and auto-start was never built (no Azure one-liner exists for
+it — would've needed an Automation Account + scheduled runbook). **User
+decision: skip this entirely** — the VM's running cost is minimal enough
+against the Visual Studio subscription's free credit that scheduling isn't
+worth the added complexity. The VM just runs continuously now. Manual
+control still available if ever wanted: `az vm start`/`az vm deallocate
+-g mac-se-gemini-bridge-rg -n mac-se-bridge-vm`.
 
 ## Key files
 
@@ -612,3 +636,212 @@ loop once confirmed working from the actual hardware (verification was
 still pending as of this write-up — check with the user before assuming
 this is fully live end-to-end from the SE itself, as opposed to just
 verified from this PC).
+
+## Switching the Gemini model (rate limits)
+
+Hit a Gemini API rate limit on `gemini-flash-latest` under the free tier.
+Rather than enabling billing (would unlock a higher tier but isn't
+necessary at this traffic volume — a single terminal, sporadic short
+messages), switched `GEMINI_MODEL` to `gemini-flash-lite-latest`, which
+gets a more generous free-tier quota. Deployed to the Azure VM and
+verified live by connecting directly to the VM's public IP from a headless
+Python test client (no need to involve the physical SE for this kind of
+check) — auth + a full chat round-trip both worked with no rate-limit
+error.
+
+## Phase 2: Gemini-driven file management
+
+Goal: let natural-language requests typed on the SE ("delete X", "get me a
+copy of ResEdit") actually execute against the SE's filesystem, via
+Gemini's function-calling API turning a chat message into a real FTP
+operation.
+
+### The connectivity problem, and picking a solution
+
+`bridge.py` (on Azure) only ever talked to the Gemini API — it had no path
+to the SE's FTP server, which sits on a private LAN IP (`192.168.1.210`)
+behind the home router. Worked through the options with the user:
+
+- **Port-forward the FTP server directly to the internet** — simplest
+  technically, rejected: exposes 1990s unpatched FTP software (already
+  known to be fragile, see the crash findings below) with cleartext
+  credentials directly to internet scanners/bots.
+- **A LAN-side relay running Tailscale**, tunneling Azure into the home
+  network without exposing anything publicly. Landed here. Debated the
+  actual relay device at length:
+  - A **GL.iNet travel router** (e.g. GL-MT3000 "Beryl AX") was considered
+    first — has an official Tailscale app built into its firmware.
+    Initially assumed it could run in Access Point/bridge mode (joining
+    the existing home network passively) while still running Tailscale,
+    but checking GL.iNet's actual docs found this is **not possible** —
+    Tailscale is explicitly unavailable in any non-Router network mode on
+    their firmware. Working around this would mean putting the GL.iNet
+    device in its own Router mode (creating a *new* sub-network) and
+    **moving the SE onto that new WiFi network** instead of the existing
+    home WiFi — workable, but more moving parts than necessary.
+  - A **Raspberry Pi** running Tailscale directly was reconsidered instead
+    — being a full Linux machine (not router firmware with GUI-imposed
+    mode restrictions), it just joins the existing home LAN as an
+    ordinary DHCP client (same as any laptop) and runs Tailscale as a
+    completely normal background service, advertising the *existing* home
+    subnet unchanged. No SE reconfiguration needed at all, unlike the
+    GL.iNet path. Once the user noted the Pi was ~50% cheaper than a
+    comparable GL.iNet router too, this became the clear choice.
+  - Board picked after several rounds of price/tradeoff comparison: Pi
+    Zero 2 W was the original pick but is essentially permanently out of
+    stock; a Pi Pico 2 W was briefly considered but is a microcontroller
+    (no OS, can't run Tailscale at all — different product line entirely
+    despite the similar name); landed on a **Pi 4, 1GB RAM** — the 3B+ was
+    only ~£3 cheaper (not worth the older board's USB-shared Ethernet and
+    shorter support horizon for that little saving) and a Pi 5 was ruled
+    out despite being the same price, since it needs active cooling for
+    sustained use (a moving part/failure point for a device meant to run
+    forgotten in a drawer for years) and its extra performance is
+    completely wasted on this workload. 1GB RAM is plenty — Tailscale's
+    daemon plus a headless `Raspberry Pi OS Lite` install is a tiny
+    footprint, nothing like the embedded-router RAM constraints that
+    ruled out some cheap GL.iNet models.
+- **Not yet physically built** — this is documented as the plan, not a
+  completed step. `bridge/README.md`'s file-management section and
+  `ARCHITECTURE.md`'s system diagram both reflect this as planned.
+
+### Live-testing `mac_ftp.py` against the real SE
+
+Before wiring anything to an LLM, tested the previously-untested
+operations (`get`, `rm`, `rmdir`, `rename`, `put-app`) directly via the
+CLI. First hurdle: the SE was powered off, then once powered on the FTP
+connection kept alternating between `530 Login failed` and connection
+refused — turned out the SE was booted into **System 6.0.8**, not 7.1, so
+NetPresenz (which the CLI's default anonymous credentials were tuned for)
+wasn't even running; NCSA Telnet's FTP server was answering instead, which
+needs its own account (set up via Edit → Preferences → FTP Users, not
+anonymous access). Confirmed via WinSCP that the real credentials worked
+outside `mac_ftp.py` too, ruling out a tool-specific bug.
+
+With the right credentials, `get` and `put` (re-verified) worked cleanly.
+Then two real, hardware-confirmed findings:
+
+- **`mkdir` (`MKD`) crashed the FTP server outright** — not a clean
+  rejection, the server stopped responding entirely and needed a physical
+  restart. Confirmed a second time with **`rename` (`RNFR`/`RNTO`)** —
+  same crash behavior. WinSCP hitting the same "Command not understood"
+  wall on a manual delete attempt (unprompted, from the user) further
+  confirmed this isn't an `ftplib`/`mac_ftp.py`-specific issue — it's
+  NCSA Telnet's FTP server itself only implementing a minimal command set
+  and choking on anything outside it.
+- **`rm` (`DELE`) is unsupported but degrades safely** — cleanly rejected
+  with `500 Command not understood` every time, no crash.
+
+Also learned mid-session that **System 7.1 is staying off the table** for
+day-to-day use — it's "flaky and kills performance," so NetPresenz's
+fuller FTP command set (assumed but never actually verified) isn't
+realistically available to re-test. Design decision made on that basis:
+`mkdir`/`rmdir`/`rename` dropped entirely from the Gemini-callable tool
+set (crash risk, and no reliable way for the bridge to know which OS is
+booted before trying), while `delete_file` stayed in (degrades safely,
+worth keeping in case NetPresenz/7.1 ever becomes usable again).
+
+### Refactor: `mac_ftp_lib.py`
+
+Split `tools/mac_ftp.py`'s CLI-only `cmd_*` functions (each took an
+argparse `Namespace`) into a proper importable library,
+`tools/mac_ftp_lib.py`: `connect_once`/`with_retry` unchanged (still
+fresh-connection-per-retry, active-mode-forced), plus parameterized
+functions (`list_dir`, `download`, `upload`, `upload_app`, `delete_file`,
+`make_dir`, `remove_dir`, `rename`) that return plain data instead of
+printing. `mac_ftp.py` itself became a thin CLI wrapper importing from the
+library — same commands/flags/behavior for existing manual use, verified
+via `--help` and a syntax/import check before any live testing resumed.
+
+### Gemini function-calling in `bridge.py`
+
+Before writing code, checked the actual Gemini REST API function-calling
+contract rather than guessing — worth doing since `bridge.py` talks to the
+raw REST endpoint directly (no SDK), and getting the `functionResponse`
+turn's `role` field wrong would have silently broken the whole loop.
+Confirmed via the official API reference (`ai.google.dev/api/generate-content`)
+that valid `role` values are only `user`/`model`/`system` — `functionResponse`
+parts go in a `role: "user"` content entry, not `role: "function"` as one
+lower-confidence search result suggested.
+
+Implemented:
+- `TOOLS` (Gemini function declarations) for `list_files`, `delete_file`,
+  `search_software`, `download_and_install_software`.
+- `call_gemini_with_tools()`: a loop (capped at 5 rounds) that posts the
+  conversation + tool declarations, and on a `functionCall` response,
+  either executes the tool immediately (non-destructive) or — for
+  `delete_file`/`download_and_install_software` — sends a plain-English
+  description down the Telnet connection and waits for the next line to
+  be `yes`/`y` before actually running it, reusing the same out-of-band
+  `next(lines)` pattern `authenticate()` already used for the password
+  prompt.
+- `PROTECTED_PATH_PREFIXES` (`System Folder`, `System`, `Finder`) checked
+  before any destructive op regardless of confirmation.
+- `search_software`: archive.org's public `advancedsearch.php` API only.
+  Macintosh Garden was planned as a second source too, but checking (both
+  a direct fetch and a search) found the site actively returns HTTP 403 to
+  automated requests — the same bot-gating pattern already hit once before
+  in this project with a different retro-software download source. Not
+  included rather than shipping something that silently never works.
+- `download_and_install_software`: downloads via `urllib`, resolves
+  archive.org identifiers/details-URLs to a real file URL via the
+  metadata API, extracts archives with `unar -forks visible`, pulls the
+  real resource fork + Finder info (type/creator/flags) from the
+  AppleDouble sidecar, sanity-checks the resource fork actually parses
+  before trusting it (guarding against the exact AppleDouble-misidentified-
+  as-raw-resource-fork bug hit earlier in this project), then uploads a
+  MacBinary `.bin` for NetPresenz/NCSA Telnet's auto-decode. Disk images
+  and plain files skip straight to upload. Every failure path reports
+  back in plain language rather than being swallowed.
+
+### End-to-end testing, and a real bug found along the way
+
+Restarted the local Windows-hosted bridge with the new code and drove it
+with a headless Python test client (same technique used earlier for the
+rate-limit verification). First attempt: every file-management tool
+reported "not configured," which looked like a credentials problem —
+several rounds of debugging Windows environment-variable passing
+(PowerShell's `Start-Process` doesn't reliably inherit `$env:` the way
+expected; `.NET ProcessStartInfo` with unread redirected stdout/stderr
+streams caused a separate, confusing "connection accepted but nothing
+sent back" symptom) before finding the real cause: an explicit debug
+launcher script proved the environment variables *were* correctly set
+inside the process, which meant the actual bug was elsewhere.
+
+Turned out to be a `sys.path` bug in `bridge.py` itself: the fallback
+logic for finding `mac_ftp_lib.py` only handled two deployment layouts
+(flat, everything alongside `bridge.py` — the Azure plan; or repo layout,
+`bridge/bridge.py` + sibling `../tools/`), but the actual local working
+copy has a *third* layout — `bridge.py` at the project root with `tools/`
+as an immediate child directory. The import silently failed and fell back
+to a generic "not configured" message that looked exactly like a missing
+credential rather than a missing module. Fixed by adding the third
+candidate path.
+
+With that fixed, verified via the bridge's own connection log (not just
+the chat replies, which can't be fully trusted at face value — see below)
+that everything works mechanically as designed: `list_files` returns the
+real SE listing, a **declined** delete shows zero `DELE` attempts in the
+log, a **confirmed** delete shows the real 4-attempt retry sequence
+(failing gracefully, as expected given the 6.0.8 FTP server limitations
+above), and `search_software` executes against archive.org without error.
+
+One cosmetic-only issue found: on a declined delete, Gemini's reply said
+"the OS doesn't support deletion" instead of accurately reporting "you
+said no" — the model filling in a plausible-sounding reason rather than
+the real one, likely primed by the system prompt's framing around
+delete's usual failure mode. Improved the synthetic decline message to
+explicitly tell the model not to invent a reason; left as a known minor
+wording quirk rather than over-engineering prompt wording further, since
+the actual safety property (confirmed via server log: no real delete
+without explicit "yes") was never in question.
+
+### Still open
+
+- Deploy to Azure (copy `mac_ftp_lib.py` + its dependencies + `unar`
+  alongside `bridge.py`, set `MAC_FTP_*` in `bridge.env` — steps written
+  up in `bridge/README.md`).
+- Build the Pi + Tailscale relay so Azure can actually reach the SE.
+- Live-test `download_and_install_software` against a real archive.org
+  title (needs `unar`, not readily available on Windows — deferred to the
+  Azure VM once deployed).

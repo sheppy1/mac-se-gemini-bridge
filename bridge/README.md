@@ -48,6 +48,11 @@ This file is the "how to run/rebuild the bridge itself" reference.
   directly. Simpler and far more reliable.)
 - The reply is converted to Mac Roman / CRLF line endings and written back
   down the same TCP connection.
+- The bridge also exposes a small set of Gemini function-calling tools —
+  list/delete files on the SE, search for and install classic Mac software —
+  so natural-language requests like "delete X" or "get me a copy of ResEdit"
+  can turn into real FTP operations. See "File management & software
+  installation" below for what's actually supported and the safety model.
 
 ## Requirements
 
@@ -63,6 +68,15 @@ This file is the "how to run/rebuild the bridge itself" reference.
 - If reachable beyond a trusted LAN: a `BRIDGE_PASSWORD` set to something
   random (see below) — without it, anyone who finds the IP/port can chat
   using your Gemini API quota.
+- Optional, for file-management tools: `MAC_FTP_HOST`/`MAC_FTP_USER`/
+  `MAC_FTP_PASS` (the SE's FTP credentials), `mac_ftp_lib.py` +
+  `make_macbinary.py` + `extract_appledouble.py` + `parse_rsrc.py` from
+  `../tools/` alongside `bridge.py`, and the `unar` command-line tool
+  (`apt-get install unar` on the Azure VM) for the software-install
+  pipeline. Leave `MAC_FTP_USER`/`MAC_FTP_PASS` unset to disable file
+  management entirely — the tools still exist but report themselves as "not
+  configured" rather than attempting a connection. See "File management &
+  software installation" below.
 
 ## One-time setup (fresh machine)
 
@@ -191,17 +205,36 @@ VM_IP=$(az vm show -d -g mac-se-gemini-bridge-rg -n mac-se-bridge-vm --query pub
 
 scp bridge.py azureuser@$VM_IP:~/bridge.py
 
+# File-management/software-install tools -- only needed if MAC_FTP_USER/
+# MAC_FTP_PASS will be set below. Deployed flat, alongside bridge.py, not
+# in a tools/ subdirectory (bridge.py's sys.path handling covers this
+# layout specifically -- see the comment at the top of bridge.py).
+scp ../tools/mac_ftp_lib.py ../tools/make_macbinary.py \
+    ../tools/extract_appledouble.py ../tools/parse_rsrc.py \
+    azureuser@$VM_IP:~/
+
+# unar is needed for the software-install pipeline (StuffIt/BinHex/Zip
+# extraction) -- skip if MAC_FTP_USER/MAC_FTP_PASS won't be set.
+ssh azureuser@$VM_IP sudo apt-get update -qq
+ssh azureuser@$VM_IP sudo apt-get install -y unar
+
 # bridge.env holds secrets — kept out of the systemd unit file itself so
 # they're not visible via `systemctl cat` or the unit file's permissions
 cat > /tmp/bridge.env <<EOF
 GEMINI_API_KEY=your-key-here
 BRIDGE_PASSWORD=the-password-from-step-1
+MAC_FTP_HOST=192.168.1.210
+MAC_FTP_USER=your-se-ftp-username
+MAC_FTP_PASS=your-se-ftp-password
 EOF
 scp /tmp/bridge.env azureuser@$VM_IP:~/bridge.env
 
 ssh azureuser@$VM_IP bash <<'REMOTE'
 sudo mkdir -p /opt/mac-se-bridge
 sudo cp /home/azureuser/bridge.py /opt/mac-se-bridge/bridge.py
+sudo cp /home/azureuser/mac_ftp_lib.py /home/azureuser/make_macbinary.py \
+        /home/azureuser/extract_appledouble.py /home/azureuser/parse_rsrc.py \
+        /opt/mac-se-bridge/ 2>/dev/null || true
 sudo cp /home/azureuser/bridge.env /opt/mac-se-bridge/bridge.env
 sudo chmod 600 /opt/mac-se-bridge/bridge.env
 
@@ -286,6 +319,63 @@ connecting, before the chat banner appears.
 Once connected: type a message, press Return, wait for the reply. Commands:
 - `/reset` — clear conversation history for this connection
 - `/quit` or `/exit` — disconnect
+
+## File management & software installation (Gemini tools)
+
+The bridge gives Gemini four function-calling tools, backed by
+[`../tools/mac_ftp_lib.py`](../tools/mac_ftp_lib.py):
+
+| Tool | What it does | Confirmation required? |
+|---|---|---|
+| `list_files` | Lists a directory on the SE | No |
+| `delete_file` | Deletes a file on the SE | **Yes** |
+| `search_software` | Searches archive.org for classic Mac software, returns a shortlist | No |
+| `download_and_install_software` | Downloads a specific result and installs it on the SE | **Yes** |
+
+**Destructive actions always require an explicit "yes" typed at the SE's own
+terminal** before they run, even after Gemini decides to do them — the
+bridge describes exactly what it's about to do and waits for your
+confirmation as a normal line of chat. This is deliberate: the bridge is
+reachable from the whole internet (password-gated, but still), and a
+misparsed request or a leaked password shouldn't be able to touch the SE's
+filesystem without you explicitly saying yes in the moment.
+
+**Not implemented: `make_folder`/`delete_folder`/`rename_or_move`.** Live
+testing against this SE's actual FTP server (NCSA Telnet, System 6.0.8 —
+System 7.1/NetPresenz is too unstable to run day-to-day, so this isn't a
+temporary state) found that `MKD` and `RNFR`/`RNTO` **crash the server
+outright** (confirmed twice, needed a physical restart both times), not
+just a clean protocol rejection. `DELE` is at least rejected cleanly when
+unsupported, so `delete_file` stays in the tool set — worst case it reports
+"not supported" rather than doing anything. Given the bridge has no
+reliable way to know which OS is currently booted before trying, mkdir/
+rmdir/rename were dropped entirely rather than risk crashing the SE's FTP
+server from a chat message.
+
+**`search_software` only queries archive.org's public `advancedsearch.php`
+API** — Macintosh Garden was considered too, but its site actively 403s
+automated requests (confirmed while building this), so it isn't included.
+Gemini is instructed to always search first, present the shortlist, and
+wait for you to pick a specific result before ever calling
+`download_and_install_software` — it's told never to guess a URL itself.
+
+**The install pipeline** reuses this project's existing packaging tools:
+download → detect format → `unar -forks visible` extraction for archives →
+pull the real resource fork + Finder info (type/creator/flags) from the
+AppleDouble sidecar → sanity-check the resource fork actually parses
+(this project hit a real silent-corruption bug here once, with an
+AppleDouble container misidentified as a raw resource fork) → build a
+MacBinary `.bin` and upload it for NetPresenz/NCSA Telnet's auto-decode.
+Disk images and plain files skip straight to upload. Any failure at any
+step is reported back in plain language over the Telnet session rather
+than swallowed or silently producing a broken file.
+
+**Connectivity note**: none of this works yet from the Azure deployment —
+`MAC_FTP_HOST` is the SE's private LAN IP, and Azure has no path to it
+without a home-network relay (Raspberry Pi + Tailscale subnet router is the
+planned approach; see `../SESSION_SUMMARY.md`). Until that's set up, file
+management only works when running the bridge locally on a PC on the same
+LAN as the SE.
 
 ## Moving to a new machine
 

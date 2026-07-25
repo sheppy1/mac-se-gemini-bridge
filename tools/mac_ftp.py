@@ -1,25 +1,9 @@
 #!/usr/bin/env python3
 """
-CLI for managing files on the Mac SE's NetPresenz FTP server.
-
-Bakes in everything learned the hard way about this specific setup:
-  - MUST use active-mode FTP. This Mac runs classic MacTCP (not Open
-    Transport -- the SE's 68000 CPU is below OT's 68030 minimum), which
-    handles passive-mode FTP unreliably (stalls/hangs). Python's ftplib
-    defaults to passive; this script explicitly forces active mode.
-  - NetPresenz auto-encodes/decodes MacBinary on the fly based on filename
-    suffix: request/send "name.bin" and it transparently converts between
-    a plain Unix-style file and a full Mac file (data fork + resource fork
-    + type/creator) using MacBinary as the wire format. That's used here
-    for put-app/get-app so a real application's resource fork survives the
-    trip without needing a separate encode/decode step against a local HFS
-    volume.
-  - Connection is genuinely flaky on this vintage hardware/network path,
-    and a failed operation can leave a control connection in a broken,
-    unrecoverable state (observed: further reads on the same connection
-    fail immediately with "cannot read from timed out object" even though
-    the server side is fine). So every operation retries with a *fresh*
-    connection each attempt, not a retry on the same connection.
+CLI for managing files on the Mac SE's FTP server. Thin wrapper around
+mac_ftp_lib.py -- see that module's docstring for the hard-won lessons
+baked into the underlying connection/retry logic (active-mode FTP,
+fresh-connection-per-retry, MacBinary auto-decode for apps).
 
 Configure the connection via environment variables (with sensible
 defaults matching this project's setup) or CLI flags:
@@ -39,153 +23,66 @@ Examples:
   python mac_ftp.py rename "Documents/a.txt" "Documents/b.txt"
 """
 import argparse
-import ftplib
+import datetime
 import os
 import sys
-import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import mac_ftp_lib as lib  # noqa: E402
 
 DEFAULT_HOST = os.environ.get("MAC_FTP_HOST", "192.168.1.210")
 DEFAULT_USER = os.environ.get("MAC_FTP_USER", "anonymous")
 DEFAULT_PASS = os.environ.get("MAC_FTP_PASS", "ftp@example.com")
 
-RETRIES = 4
-RETRY_DELAY_S = 3
-TIMEOUT_S = 30
-
-
-def connect_once(host, user, password):
-    ftp = ftplib.FTP(timeout=TIMEOUT_S)
-    ftp.connect(host, 21)
-    ftp.login(user, password)
-    ftp.set_pasv(False)  # active mode -- required, see module docstring
-    return ftp
-
-
-def with_retry(desc, host, user, password, fn):
-    """Run fn(ftp) against a *freshly established* connection, retrying
-    with a brand new connection each time on failure. Deliberately does not
-    reuse a connection across attempts -- see module docstring."""
-    last_err = None
-    for attempt in range(1, RETRIES + 1):
-        ftp = None
-        try:
-            ftp = connect_once(host, user, password)
-            result = fn(ftp)
-            try:
-                ftp.quit()
-            except Exception:
-                ftp.close()
-            return result
-        except (OSError, *ftplib.all_errors) as e:
-            last_err = e
-            print(f"  [{desc} attempt {attempt}/{RETRIES} failed: {e}, retrying]",
-                  file=sys.stderr)
-            if ftp is not None:
-                try:
-                    ftp.close()
-                except Exception:
-                    pass
-            time.sleep(RETRY_DELAY_S)
-    raise SystemExit(f"{desc} failed after {RETRIES} attempts: {last_err}")
-
 
 def cmd_ls(args):
-    path = args.path or ""
-
-    def do(ftp):
-        lines = []
-        ftp.retrlines(f"LIST {path}".strip(), lines.append)
-        return lines
-
-    for line in with_retry("LIST", args.host, args.user, args.password, do):
+    for line in lib.list_dir(args.host, args.user, args.password, args.path or ""):
         print(line)
 
 
 def cmd_pwd(args):
-    print(with_retry("PWD", args.host, args.user, args.password, lambda ftp: ftp.pwd()))
+    print(lib.pwd(args.host, args.user, args.password))
 
 
 def cmd_get(args):
-    remote = args.remote
-    if args.macbinary and not remote.lower().endswith((".bin", ".mb", ".macbin", ".macbinary")):
-        remote = remote + ".bin"
-    local = args.local or os.path.basename(remote)
-
-    def do(ftp):
-        with open(local, "wb") as f:
-            ftp.retrbinary(f"RETR {remote}", f.write)
-
-    with_retry(f"GET {remote}", args.host, args.user, args.password, do)
-    print(f"wrote {local} ({os.path.getsize(local)} bytes)")
+    local = args.local or os.path.basename(args.remote)
+    size = lib.download(args.host, args.user, args.password, args.remote, local,
+                         macbinary=args.macbinary)
+    print(f"wrote {local} ({size} bytes)")
 
 
 def cmd_put(args):
-    remote = args.remote or os.path.basename(args.local)
-
-    def do(ftp):
-        with open(args.local, "rb") as f:
-            ftp.storbinary(f"STOR {remote}", f)
-
-    with_retry(f"PUT {remote}", args.host, args.user, args.password, do)
+    remote = lib.upload(args.host, args.user, args.password, args.local, args.remote)
     print(f"uploaded {args.local} -> {remote}")
 
 
 def cmd_put_app(args):
-    """Upload an app's data+resource fork by building a MacBinary file with
-    tools/make_macbinary.py and letting NetPresenz auto-decode it on STOR
-    (any upload ending in .bin/.mb/.macbin/.macbinary is decoded server-side
-    -- see NetPresenz's own documentation)."""
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from make_macbinary import make_macbinary  # noqa: E402
-
-    def read_or_empty(path):
-        if not path:
-            return b""
-        with open(path, "rb") as f:
-            return f.read()
-
-    import datetime
-    when = datetime.datetime.strptime(args.date, "%Y-%m-%d") if args.date \
-        else datetime.datetime.now()
-
-    data_fork = read_or_empty(args.data)
-    rsrc_fork = read_or_empty(args.rsrc)
-    blob = make_macbinary(args.name, args.type, args.creator, args.flags,
-                           data_fork, rsrc_fork, when)
-
-    remote_dir = (args.remote_dir.rstrip("/") + "/") if args.remote_dir else ""
-    remote = f"{remote_dir}{args.name}.bin"
-
-    def do(ftp):
-        import io
-        ftp.storbinary(f"STOR {remote}", io.BytesIO(blob))
-
-    with_retry(f"PUT-APP {remote}", args.host, args.user, args.password, do)
-    print(f"uploaded {args.name} (data={len(data_fork)}B rsrc={len(rsrc_fork)}B) "
+    when = datetime.datetime.strptime(args.date, "%Y-%m-%d") if args.date else None
+    remote, data_len, rsrc_len = lib.upload_app(
+        args.host, args.user, args.password,
+        args.data, args.rsrc, args.name, args.type, args.creator,
+        flags=args.flags, when=when, remote_dir=args.remote_dir)
+    print(f"uploaded {args.name} (data={data_len}B rsrc={rsrc_len}B) "
           f"-> {remote} (NetPresenz will auto-decode to '{args.name}')")
 
 
 def cmd_rm(args):
-    with_retry(f"DELE {args.remote}", args.host, args.user, args.password,
-               lambda ftp: ftp.delete(args.remote))
+    lib.delete_file(args.host, args.user, args.password, args.remote)
     print(f"deleted {args.remote}")
 
 
 def cmd_mkdir(args):
-    with_retry(f"MKD {args.remote}", args.host, args.user, args.password,
-               lambda ftp: ftp.mkd(args.remote))
+    lib.make_dir(args.host, args.user, args.password, args.remote)
     print(f"created {args.remote}")
 
 
 def cmd_rmdir(args):
-    with_retry(f"RMD {args.remote}", args.host, args.user, args.password,
-               lambda ftp: ftp.rmd(args.remote))
+    lib.remove_dir(args.host, args.user, args.password, args.remote)
     print(f"removed {args.remote}")
 
 
 def cmd_rename(args):
-    with_retry(f"RNFR/RNTO {args.old} -> {args.new}", args.host, args.user, args.password,
-               lambda ftp: ftp.rename(args.old, args.new))
+    lib.rename(args.host, args.user, args.password, args.old, args.new)
     print(f"renamed {args.old} -> {args.new}")
 
 
