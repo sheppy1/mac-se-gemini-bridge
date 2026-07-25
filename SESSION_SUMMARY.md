@@ -838,10 +838,30 @@ without explicit "yes") was never in question.
 
 ### Still open
 
-- Deploy to Azure (copy `mac_ftp_lib.py` + its dependencies + `unar`
-  alongside `bridge.py`, set `MAC_FTP_*` in `bridge.env` — steps written
-  up in `bridge/README.md`).
-- Build the Pi + Tailscale relay so Azure can actually reach the SE.
-- Live-test `download_and_install_software` against a real archive.org
-  title (needs `unar`, not readily available on Windows — deferred to the
-  Azure VM once deployed).
+- ✅ ~~Deploy to Azure~~ — done. `bridge.py` + `mac_ftp_lib.py` + deps +
+  `unar` are on the VM (`/opt/mac-se-bridge/`), service restarted.
+  `MAC_FTP_USER`/`MAC_FTP_PASS` deliberately left **unset** in
+  `bridge.env` until the Pi relay exists — with them unset, the
+  file-management tools report "not configured" instantly instead of
+  hanging for minutes trying to reach the SE's unreachable private IP.
+  Verified live: `search_software` works from the real bridge (no SE
+  connectivity needed at all), `list_files` correctly reports "not
+  configured" with no hang.
+- ✅ ~~Live-test `download_and_install_software`~~ — dry-run succeeded
+  against a real archive.org title (`tucows_204988_SimpleText_Color_Menu`,
+  a genuine `.sit`, same sourcing pattern as BetterTelnet earlier in this
+  project). Ran directly on the Azure VM with a deliberately fake local
+  FTP host: download → archive.org details-URL resolution via the
+  metadata API → `unar -forks visible` extraction → AppleDouble Finder
+  Info + resource fork parsing → resource fork sanity check (passed,
+  found a real `styl` resource) → MacBinary build all succeeded; only the
+  final upload failed, exactly as expected given the fake host. Validates
+  the whole pipeline short of the live FTP step, which needs the Pi.
+- Build the Pi + Tailscale relay so Azure can actually reach the SE — the
+  one remaining blocker. Once it exists: set `MAC_FTP_*` in the VM's
+  `bridge.env`, restart the service, and everything above goes live for
+  real.
+- Minor, non-blocking: `search_software`'s archive.org relevance is weak
+  for specific classic-software titles (tested "ResEdit" and "MacPaint",
+  both returned mostly irrelevant results) — worth a better query
+  strategy at some point, not urgent.
