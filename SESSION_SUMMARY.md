@@ -861,7 +861,19 @@ without explicit "yes") was never in question.
   one remaining blocker. Once it exists: set `MAC_FTP_*` in the VM's
   `bridge.env`, restart the service, and everything above goes live for
   real.
-- Minor, non-blocking: `search_software`'s archive.org relevance is weak
-  for specific classic-software titles (tested "ResEdit" and "MacPaint",
-  both returned mostly irrelevant results) — worth a better query
-  strategy at some point, not urgent.
+- ✅ ~~`search_software`'s archive.org relevance is weak~~ — fixed.
+  archive.org's own full-text search stayed weak (raw "MacPaint"/
+  "ResEdit"/"golf game" queries kept returning mostly unrelated games and
+  media dumps), so added a second, internal Gemini call inside
+  `search_software` that judges genuine relevance against the raw
+  candidates and filters before anything reaches the user, using
+  structured JSON output (`responseMimeType`/`responseSchema` on
+  `generationConfig` — verified this is the correct field structure for
+  the `generateContent` endpoint specifically, since a couple of doc pages
+  showed a different nested shape that turned out to belong to the newer
+  Interactions API instead). Falls back to the unfiltered list only on an
+  actual error, not just an empty filtered result -- "no genuine match"
+  is a valid, useful answer on its own. Verified live: a "golf game"
+  search and a re-test of "MacPaint" both now correctly report no genuine
+  match and suggest better search terms, instead of showing the
+  previously-seen irrelevant results. Deployed to Azure.

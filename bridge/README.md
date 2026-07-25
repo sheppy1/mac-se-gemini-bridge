@@ -359,6 +359,18 @@ Gemini is instructed to always search first, present the shortlist, and
 wait for you to pick a specific result before ever calling
 `download_and_install_software` — it's told never to guess a URL itself.
 
+archive.org's full-text search has weak relevance for specific classic-
+software titles on its own (a raw "MacPaint" search returns mostly
+unrelated games/media dumps that just share a word). To fix this,
+`search_software` makes a second, internal Gemini call after getting the
+raw results — passing the original request and the candidate
+titles/descriptions, asking it to judge genuine relevance (not just
+keyword overlap) and return only real matches, via structured JSON output
+(`generationConfig.responseMimeType`/`responseSchema`). If that filtering
+call fails for any reason, it falls back to the unfiltered list rather
+than breaking search entirely; if it succeeds but finds nothing genuinely
+relevant, that's reported honestly rather than showing junk.
+
 **The install pipeline** reuses this project's existing packaging tools:
 download → detect format → `unar -forks visible` extraction for archives →
 pull the real resource fork + Finder info (type/creator/flags) from the

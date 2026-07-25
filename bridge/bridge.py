@@ -299,7 +299,70 @@ def tool_search_software(args):
         })
     if not results:
         return {"results": [], "message": "no results found on archive.org for this query"}
-    return {"results": results}
+
+    filtered = _gemini_filter_search_results(query, results)
+    if not filtered:
+        return {"results": [],
+                "message": ("archive.org returned results for this query, but none of them "
+                             "looked like a genuine match -- try rephrasing the search")}
+    return {"results": filtered}
+
+
+def _gemini_filter_search_results(query: str, results: list) -> list:
+    """Ask Gemini to judge which raw archive.org results actually match
+    what the user asked for, filtering out keyword-overlap noise (e.g. a
+    random game/media dump that happens to share a word with the query)
+    before it's ever shown. This is a separate, non-chat generateContent
+    call -- its output is structured JSON, not conversational text -- so a
+    failure here should never break search entirely: falls back to the
+    unfiltered list on any error. An empty result after a *successful*
+    filter is left as-is (a genuine "nothing matched" answer), not treated
+    as a failure."""
+    if not results or not GEMINI_API_KEY:
+        return results
+
+    candidates_text = "\n".join(
+        f"{i}. {r['title']} -- {r['description'][:150]}"
+        for i, r in enumerate(results)
+    )
+    prompt = (
+        f"A user of a 1987 Macintosh SE is looking for classic Macintosh "
+        f"software matching this request: \"{query}\"\n\n"
+        f"Candidate results from an archive.org search:\n{candidates_text}\n\n"
+        f"Judge each candidate strictly on whether it plausibly matches what "
+        f"the user actually asked for -- not just keyword overlap. A random "
+        f"game/media dump that happens to share a word with the query is NOT "
+        f"a match. Return the indices of genuinely plausible matches, best "
+        f"match first. If none plausibly match, return an empty list."
+    )
+
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": {
+                "type": "object",
+                "properties": {
+                    "relevant_indices": {"type": "array", "items": {"type": "integer"}},
+                },
+                "required": ["relevant_indices"],
+            },
+        },
+    }
+    req = urllib.request.Request(
+        GEMINI_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "X-goog-api-key": GEMINI_API_KEY},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        indices = json.loads(text).get("relevant_indices", [])
+        return [results[i] for i in indices if isinstance(i, int) and 0 <= i < len(results)]
+    except Exception:
+        return results
 
 
 def _resolve_archive_org_download_url(url_or_id: str) -> str:
